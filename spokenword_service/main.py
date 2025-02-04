@@ -2,12 +2,11 @@
 Spoken Word Service
 ===================
 
-This API manages lines of spoken words within a story. Lines are grouped into speeches
-and can be interspersed with actions. The service supports CRUD operations on lines,
-which are persisted to SQLite and (optionally) synchronized with search systems via
-dynamic service discovery from the API Gateway. JWT-based authentication is enforced,
-and Prometheus instrumentation is integrated. The OpenAPI version is forced to 3.0.3.
-
+This service manages lines of spoken words within a story. Lines are grouped into speeches and 
+can be interspersed with actions. The service supports CRUD operations on lines, which are persisted 
+to SQLite and synchronized with search systems via dynamic service discovery from the API Gateway. 
+JWT-based authentication is enforced, and Prometheus instrumentation is integrated. The OpenAPI 
+version is forced to 3.0.3.
 """
 
 import os
@@ -129,7 +128,10 @@ def get_service_url(service_name: str) -> str:
     try:
         r = httpx.get(f"{API_GATEWAY_URL}/lookup/{service_name}", timeout=5.0)
         r.raise_for_status()
-        return r.json().get("url")
+        url = r.json().get("url")
+        if not url:
+            raise ValueError("No URL returned")
+        return url
     except Exception as e:
         logger.error(f"Service discovery failed for '{service_name}': {e}")
         raise HTTPException(status_code=503, detail=f"Service discovery failed for '{service_name}'")
@@ -153,11 +155,12 @@ Instrumentator().instrument(app).expose(app)
 # -----------------------------------------------------------------------------
 # Endpoints for Spoken Word Service
 # -----------------------------------------------------------------------------
-@app.get("/health", tags=["Health"])
+@app.get("/health", tags=["Health"], openapi_extra={"operationId": "getHealthStatus"})
 def health_check():
     return {"status": "healthy"}
 
-@app.get("/lines", response_model=List[LineResponse], tags=["Lines"])
+@app.get("/lines", response_model=List[LineResponse], tags=["Lines"],
+         openapi_extra={"operationId": "listLines"})
 def list_lines(
     scriptId: int = Query(..., description="Unique identifier of the script"),
     characterId: Optional[int] = Query(None, description="Filter by character ID"),
@@ -187,11 +190,39 @@ def list_lines(
         ) for l in lines
     ]
 
-@app.post("/lines", response_model=LineResponse, status_code=status.HTTP_201_CREATED, tags=["Lines"])
+@app.post("/lines", response_model=LineResponse, status_code=status.HTTP_201_CREATED, tags=["Lines"],
+          openapi_extra={"operationId": "createLine"})
 def create_line(request: LineCreateRequest, db: Session = Depends(get_db)):
-    # Simulate sequence assignment using max(sequenceNumber)+1 for the given speech (for simplicity)
-    max_seq_line = db.query(Line).filter(Line.speechId == request.speechId).order_by(Line.sequenceNumber.desc()).first()
-    next_seq = max_seq_line.sequenceNumber + 1 if max_seq_line else 1
+    """
+    Creates a new spoken word line. This endpoint integrates with the Central Sequence Service
+    to obtain a globally consistent sequence number for the line. The contextual comment provided 
+    in the request is forwarded to the Central Sequence Service.
+    """
+    # Discover the URL for the Central Sequence Service via the API Gateway.
+    try:
+        central_sequence_url = get_service_url("central_sequence_service")
+    except Exception as e:
+        logger.error(f"Central Sequence Service lookup failed: {e}")
+        raise HTTPException(status_code=503, detail="Central Sequence Service unavailable")
+
+    # Construct payload for the Central Sequence Service using the request's comment.
+    sequence_payload = {
+        "elementType": "spokenWord",
+        "elementId": 0,  # Dummy value, as lineId is auto-generated
+        "comment": request.comment  # Use the provided contextual comment
+    }
+
+    try:
+        response = httpx.post(f"{central_sequence_url}/sequence", json=sequence_payload, timeout=5.0)
+        response.raise_for_status()
+        sequence_data = response.json()
+        next_seq = sequence_data.get("sequenceNumber")
+        if next_seq is None:
+            raise ValueError("No sequenceNumber returned")
+    except Exception as e:
+        logger.error(f"Failed to obtain sequence number from Central Sequence Service: {e}")
+        raise HTTPException(status_code=503, detail="Failed to obtain sequence number")
+
     new_line = Line(
         scriptId=request.scriptId,
         speechId=request.speechId,
@@ -214,7 +245,8 @@ def create_line(request: LineCreateRequest, db: Session = Depends(get_db)):
         comment=new_line.comment
     )
 
-@app.get("/lines/{lineId}", response_model=LineResponse, tags=["Lines"])
+@app.get("/lines/{lineId}", response_model=LineResponse, tags=["Lines"],
+         openapi_extra={"operationId": "getLineById"})
 def get_line_by_id(lineId: int, db: Session = Depends(get_db)):
     line = db.query(Line).filter(Line.lineId == lineId).first()
     if not line:
@@ -229,7 +261,8 @@ def get_line_by_id(lineId: int, db: Session = Depends(get_db)):
         comment=line.comment
     )
 
-@app.patch("/lines/{lineId}", response_model=LineResponse, tags=["Lines"])
+@app.patch("/lines/{lineId}", response_model=LineResponse, tags=["Lines"],
+           openapi_extra={"operationId": "updateLine"})
 def update_line(lineId: int, request: LineUpdateRequest, db: Session = Depends(get_db)):
     line = db.query(Line).filter(Line.lineId == lineId).first()
     if not line:
@@ -274,4 +307,3 @@ app.openapi = custom_openapi
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=SERVICE_PORT)
-

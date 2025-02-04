@@ -2,13 +2,38 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 from main import app, Base, SessionLocal, Line
+import httpx
+
+# Dummy response class to simulate httpx.Response
+class DummyResponse:
+    def __init__(self, json_data, status_code=200):
+        self._json = json_data
+        self.status_code = status_code
+
+    def json(self):
+        return self._json
+
+    def raise_for_status(self):
+        if not (200 <= self.status_code < 300):
+            raise Exception("HTTP error")
 
 @pytest.fixture(scope="module")
-def client():
+def client(monkeypatch):
+    # Override get_service_url to always return a dummy URL
+    monkeypatch.setattr("main.get_service_url", lambda service_name: "http://dummy")
+
+    # Override httpx.post so that any POST request to a URL ending with '/sequence'
+    # returns a dummy response with a fixed sequence number (42)
+    def dummy_post(url, json, timeout):
+        if url.endswith("/sequence"):
+            return DummyResponse({"sequenceNumber": 42})
+        return DummyResponse({}, status_code=404)
+    monkeypatch.setattr(httpx, "post", dummy_post)
+
     with TestClient(app) as c:
         yield c
 
-# Fixture to reset the test database
+# Fixture to reset the database for tests
 @pytest.fixture(scope="module", autouse=True)
 def setup_database():
     Base.metadata.drop_all(bind=SessionLocal().bind)
@@ -26,13 +51,15 @@ def test_create_line(client: TestClient):
         "speechId": 1,
         "characterId": 1,
         "content": "This is a test line.",
-        "comment": "Creating test line"
+        "comment": "Creating test line with contextual details"
     }
     response = client.post("/lines", json=payload)
     assert response.status_code == 201, response.text
     data = response.json()
     assert data["content"] == "This is a test line."
     assert data["scriptId"] == 1
+    # Verify that the dummy sequence number from the CSS integration is used.
+    assert data["sequenceNumber"] == 42
 
 def test_get_line_by_id(client: TestClient):
     # Create a line first
@@ -70,4 +97,3 @@ def test_update_line(client: TestClient):
     assert patch_resp.status_code == 200, patch_resp.text
     data = patch_resp.json()
     assert data["content"] == "Line after update"
-
