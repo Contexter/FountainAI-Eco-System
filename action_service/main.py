@@ -1,7 +1,6 @@
 """
 Action Service
 ==============
-
 This API manages actions associated with characters and spoken words within a story.
 Data is persisted to SQLite and synchronized with peer services (via dynamic lookup from the API Gateway).
 JWT-based authentication is enforced and Prometheus metrics are exposed.
@@ -13,7 +12,7 @@ import sys
 import logging
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, Response, status
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
@@ -36,6 +35,8 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./action.db")
 API_GATEWAY_URL = os.getenv("API_GATEWAY_URL", "http://gateway:8000")
 JWT_SECRET = os.getenv("JWT_SECRET", "your_jwt_secret_key")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+# The name under which the Central Sequence Service is registered in the API Gateway.
+CENTRAL_SEQUENCE_SERVICE_NAME = os.getenv("CENTRAL_SEQUENCE_SERVICE_NAME", "central_sequence_service")
 
 # -----------------------------------------------------------------------------
 # Logging Configuration
@@ -116,7 +117,10 @@ def get_service_url(service_name: str) -> str:
     try:
         r = httpx.get(f"{API_GATEWAY_URL}/lookup/{service_name}", timeout=5.0)
         r.raise_for_status()
-        return r.json().get("url")
+        url = r.json().get("url")
+        if not url:
+            raise ValueError("No URL returned")
+        return url
     except Exception as e:
         logger.error(f"Service discovery failed for '{service_name}': {e}")
         raise HTTPException(status_code=503, detail=f"Service discovery failed for '{service_name}'")
@@ -128,7 +132,7 @@ app = FastAPI(
     title="Action Service",
     description=(
         "This service manages actions associated with characters and spoken words within a story. "
-        "Data is persisted to SQLite and synchronized with search systems via dynamic service discovery from the API Gateway. "
+        "Data is persisted to SQLite and synchronized with peer services via dynamic service discovery from the API Gateway. "
         "It integrates with the Central Sequence Service to maintain action order."
     ),
     version="4.0.0"
@@ -155,8 +159,6 @@ def list_actions(
     query = db.query(Action)
     if characterId:
         query = query.filter(Action.characterId == characterId)
-    # For this example, scriptId, sectionId, and speechId filtering are not implemented,
-    # as the Action model does not contain those fields.
     if keyword:
         query = query.filter(Action.description.ilike(f"%{keyword}%"))
     actions = query.all()
@@ -171,10 +173,42 @@ def list_actions(
     ]
 
 @app.post("/actions", response_model=ActionResponse, status_code=status.HTTP_201_CREATED, tags=["Actions"])
-def create_action(request: ActionCreateRequest, db: Session = Depends(get_db)):
-    # For demonstration, we simulate sequence assignment: next sequence is max + 1.
-    max_seq = db.query(Action).order_by(Action.sequenceNumber.desc()).first()
-    next_seq = max_seq.sequenceNumber + 1 if max_seq else 1
+def create_action(
+    request: ActionCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Creates a new action. This endpoint integrates with the Central Sequence Service
+    to obtain a globally consistent sequence number.
+    """
+    # Discover the Central Sequence Service URL
+    try:
+        central_sequence_url = get_service_url(CENTRAL_SEQUENCE_SERVICE_NAME)
+    except Exception as e:
+        logger.error(f"Central Sequence Service lookup failed: {e}")
+        raise HTTPException(status_code=503, detail="Central Sequence Service unavailable")
+
+    # Construct payload for the Central Sequence Service using its expected fields
+    sequence_payload = {
+        "elementType": "action",
+        "elementId": request.characterId,
+        "comment": "Action creation sequence assignment"
+    }
+
+    try:
+        # Call the Central Sequence Service's /sequence endpoint
+        response = httpx.post(f"{central_sequence_url}/sequence", json=sequence_payload, timeout=5.0)
+        response.raise_for_status()
+        sequence_data = response.json()
+        next_seq = sequence_data.get("sequenceNumber")
+        if next_seq is None:
+            raise ValueError("No sequenceNumber returned")
+    except Exception as e:
+        logger.error(f"Failed to obtain sequence number from Central Sequence Service: {e}")
+        raise HTTPException(status_code=503, detail="Failed to obtain sequence number")
+
+    # Create the new action using the sequence number from the central service
     new_action = Action(
         description=request.description,
         characterId=request.characterId,
@@ -185,6 +219,7 @@ def create_action(request: ActionCreateRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_action)
     logger.info(f"Action created with ID: {new_action.actionId}")
+
     return ActionResponse(
         actionId=new_action.actionId,
         description=new_action.description,
@@ -259,4 +294,3 @@ app.openapi = custom_openapi
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=SERVICE_PORT)
-
