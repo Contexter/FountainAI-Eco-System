@@ -1,1 +1,1 @@
-# FountaunAI-Eco-System
+# FountainAI-Eco-System
