@@ -3,15 +3,15 @@ Central Sequence Service
 ========================
 
 This service manages sequence numbers for various elements (script, section, character, action, spokenWord)
-within a story. It persists data to an SQLite database and simulates synchronization with a central Typesense
-Client microservice. Collection creation is mandatory: on startup the service ensures the Typesense collection
-schema exists. The generated OpenAPI spec is forced to version 3.0.3 for Swagger UI compatibility.
+within a story. It persists data to an SQLite database and synchronizes data with the central FountainAI Typesense Service.
+Collection creation is mandatory: on startup the service ensures the Typesense collection schema exists.
+The generated OpenAPI spec is forced to version 3.0.3 for Swagger UI compatibility.
 """
 
 import os
 import sys
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Optional
 from enum import Enum
 
 from fastapi import FastAPI, HTTPException, Depends
@@ -24,17 +24,18 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, func
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 
+import httpx
+
 # -----------------------------------------------------------------------------
 # Configuration and Environment
 # -----------------------------------------------------------------------------
 load_dotenv()  # Load environment variables from .env
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./database.db")
-TYPESENSE_CLIENT_URL = os.getenv("TYPESENSE_CLIENT_URL", "http://typesense_client_service:8001")
-TYPESENSE_SERVICE_API_KEY = os.getenv("TYPESENSE_SERVICE_API_KEY", "your_secure_typesense_service_api_key")
+# This URL should point to the FountainAI Typesense Client microservice.
+TYPESENSE_CLIENT_URL = os.getenv("TYPESENSE_CLIENT_URL", "http://fountainai-typesense-service:8001")
 SERVICE_NAME = os.getenv("SERVICE_NAME", "central_sequence_service")
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "your_admin_jwt_token")
-TEST_MODE = os.getenv("TEST_MODE", "false").lower() == "true"
 
 # -----------------------------------------------------------------------------
 # Logging Configuration
@@ -129,66 +130,42 @@ class TypesenseErrorResponse(BaseModel):
     details: Optional[str] = None
 
 # -----------------------------------------------------------------------------
-# Simulated Typesense Sync Service
+# FountainAI Typesense Service Integration
 # -----------------------------------------------------------------------------
-class SyncService:
+class FountainAITypesenseService:
     """
-    Simulated interface to the central Typesense Client microservice.
-    Ensures that the required Typesense collection exists and synchronizes documents.
-    In TEST_MODE, synchronization operations are simulated.
+    Integration with the FountainAI Typesense Client microservice.
+    This class calls the central Typesense Service endpoints:
+      - POST /collections to create or verify a collection.
+      - POST /documents/sync to upsert or delete a document.
     """
     def __init__(self):
-        if not TEST_MODE:
-            import httpx
-            self.client = httpx.Client(
-                base_url=TYPESENSE_CLIENT_URL,
-                timeout=5.0
-            )
-            self.api_key = TYPESENSE_SERVICE_API_KEY
-        else:
-            self.client = None
-            self.api_key = None
-            logger.info("TEST_MODE active: SyncService will simulate operations.")
+        self.client = httpx.Client(base_url=TYPESENSE_CLIENT_URL, timeout=10.0)
 
-    def create_or_retrieve_collection(self, collection_definition: dict) -> dict:
-        if TEST_MODE:
-            logger.info("TEST_MODE active: Simulating collection creation/verification.")
-            return {
-                "name": collection_definition.get("name"),
-                "num_documents": 0,
-                "fields": collection_definition.get("fields")
-            }
+    def create_or_update_collection(self, collection_definition: dict) -> dict:
         try:
-            response = self.client.post(
-                "/collections",
-                json=collection_definition,
-                headers={"Authorization": f"Bearer {self.api_key}"}
-            )
+            # Call the /collections endpoint of the Typesense Client microservice.
+            response = self.client.post("/collections", json=collection_definition)
             response.raise_for_status()
             logger.info(f"Collection '{collection_definition.get('name')}' created/verified successfully.")
             return response.json()
         except Exception as e:
-            logger.error(f"Failed to create/retrieve collection '{collection_definition.get('name')}': {e}")
-            raise RuntimeError("Typesense collection creation failed.")
+            logger.error("Failed to create/update collection: %s", e)
+            raise RuntimeError("Typesense collection update failed.")
 
     def sync_document(self, payload: dict):
-        if TEST_MODE:
-            logger.info("TEST_MODE active: Simulating document synchronization.")
-            return
         try:
-            response = self.client.post(
-                "/documents/sync",
-                json=payload,
-                headers={"Authorization": f"Bearer {self.api_key}"}
-            )
+            # Call the /documents/sync endpoint to upsert/delete a document.
+            response = self.client.post("/documents/sync", json=payload)
             response.raise_for_status()
-            logger.info(f"Synchronized document with ID: {payload.get('document', {}).get('id')}")
+            logger.info("Document synced successfully: %s", payload.get("document", {}).get("id"))
         except Exception as e:
-            logger.error(f"Failed to sync document {payload.get('document', {}).get('id')}: {e}")
-            raise RuntimeError("Typesense synchronization failed.")
+            logger.error("Failed to sync document: %s", e)
+            raise RuntimeError("Typesense document sync failed.")
 
-sync_service = SyncService()
-COLLECTION_NAME = "service_a_elements"  # Mandatory collection name.
+typesense_service = FountainAITypesenseService()
+# Updated collection name for the central sequence service.
+COLLECTION_NAME = "central_sequence_elements"
 
 # -----------------------------------------------------------------------------
 # FastAPI Application Initialization
@@ -197,8 +174,8 @@ app = FastAPI(
     title="Central Sequence Service",
     description=(
         "This API manages the assignment and updating of sequence numbers for various elements within a story, "
-        "ensuring logical order and consistency. Data is persisted in an SQLite database and synchronized with a central "
-        "Typesense Client microservice. Collection creation is mandatory and verified at startup."
+        "ensuring logical order and consistency. Data is persisted in an SQLite database and synchronized with the central "
+        "FountainAI Typesense Service. Collection creation is mandatory and verified at startup."
     ),
     version="1.0.0",
 )
@@ -238,7 +215,7 @@ def ensure_typesense_collection():
             ],
             "default_sorting_field": "sequence_number"
         }
-        sync_service.create_or_retrieve_collection(collection_def)
+        typesense_service.create_or_update_collection(collection_def)
     except Exception as e:
         logger.error(f"Failed to ensure Typesense collection: {e}")
 
@@ -283,7 +260,7 @@ def generate_sequence_number(request: SequenceRequest, db: Session = Depends(get
                 "comment": new_element.comment or ""
             }
         }
-        sync_service.sync_document(sync_payload)
+        typesense_service.sync_document(sync_payload)
 
         return SequenceResponse(
             sequenceNumber=new_element.sequence_number,
@@ -323,7 +300,7 @@ def reorder_elements(request: ReorderRequest, db: Session = Depends(get_db)):
                         "comment": elem.comment or ""
                     }
                 }
-                sync_service.sync_document(sync_payload)
+                typesense_service.sync_document(sync_payload)
 
                 reordered_elements.append({
                     "elementId": elem.element_id,
@@ -377,7 +354,7 @@ def create_new_version(request: VersionRequest, db: Session = Depends(get_db)):
                 "comment": new_element.comment or ""
             }
         }
-        sync_service.sync_document(sync_payload)
+        typesense_service.sync_document(sync_payload)
 
         return VersionResponse(
             versionNumber=new_element.version_number,
