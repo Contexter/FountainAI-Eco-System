@@ -1,0 +1,149 @@
+version: '3.9'
+services:
+  2fa_service:
+    build: ./2fa_service
+    container_name: 2fa_service
+    ports:
+    - 9000:8000
+    environment:
+    - SERVICE_PORT=8000
+    networks:
+    - fountainai-net
+  action_service:
+    build: ./action_service
+    container_name: action_service
+    ports:
+    - 9001:8000
+    environment:
+    - SERVICE_PORT=8000
+    networks:
+    - fountainai-net
+  central_gateway:
+    build: ./central_gateway
+    container_name: central_gateway
+    ports:
+    - 9003:8000
+    environment:
+    - SERVICE_PORT=8000
+    networks:
+    - fountainai-net
+  central_sequence_service:
+    build: ./central_sequence_service
+    container_name: central_sequence_service
+    ports:
+    - 9004:8000
+    environment:
+    - SERVICE_PORT=8000
+    networks:
+    - fountainai-net
+  character_service:
+    build: ./character_service
+    container_name: character_service
+    ports:
+    - 9005:8000
+    environment:
+    - SERVICE_PORT=8000
+    networks:
+    - fountainai-net
+  compose_manager_app:
+    build: ./compose_manager_app
+    container_name: compose_manager_app
+    ports:
+    - 9006:8000
+    environment:
+    - SERVICE_PORT=8000
+    networks:
+    - fountainai-net
+  core_script_management_service:
+    build: ./core_script_management_service
+    container_name: core_script_management_service
+    ports:
+    - 9007:8000
+    environment:
+    - SERVICE_PORT=8000
+    networks:
+    - fountainai-net
+  fountainai-rbac:
+    build: ./fountainai-rbac
+    container_name: fountainai-rbac
+    ports:
+    - 9008:8000
+    environment:
+    - SERVICE_PORT=8000
+    networks:
+    - fountainai-net
+  kms-app:
+    build: ./kms-app
+    container_name: kms-app
+    ports:
+    - 9009:8000
+    environment:
+    - SERVICE_PORT=8000
+    networks:
+    - fountainai-net
+  notification-service:
+    build: ./notification-service
+    container_name: notification-service
+    ports:
+    - 9010:8000
+    environment:
+    - SERVICE_PORT=8000
+    networks:
+    - fountainai-net
+  paraphrase_service:
+    build: ./paraphrase_service
+    container_name: paraphrase_service
+    ports:
+    - 9011:8000
+    environment:
+    - SERVICE_PORT=8000
+    networks:
+    - fountainai-net
+  performer_service:
+    build: ./performer_service
+    container_name: performer_service
+    ports:
+    - 9012:8000
+    environment:
+    - SERVICE_PORT=8000
+    networks:
+    - fountainai-net
+  session_context_service:
+    build: ./session_context_service
+    container_name: session_context_service
+    ports:
+    - 9013:8000
+    environment:
+    - SERVICE_PORT=8000
+    networks:
+    - fountainai-net
+  spokenword_service:
+    build: ./spokenword_service
+    container_name: spokenword_service
+    ports:
+    - 9014:8000
+    environment:
+    - SERVICE_PORT=8000
+    networks:
+    - fountainai-net
+  story_factory_service:
+    build: ./story_factory_service
+    container_name: story_factory_service
+    ports:
+    - 9015:8000
+    environment:
+    - SERVICE_PORT=8000
+    networks:
+    - fountainai-net
+  typesense_client_service:
+    build: ./typesense_client_service
+    container_name: typesense_client_service
+    ports:
+    - 9016:8000
+    environment:
+    - SERVICE_PORT=8000
+    networks:
+    - fountainai-net
+networks:
+  fountainai-net:
+    driver: bridge

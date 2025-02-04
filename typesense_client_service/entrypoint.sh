@@ -1,0 +1,10 @@
+#!/bin/sh
+# entrypoint.sh for Typesense Client Microservice
+
+if [ "$1" = "pytest" ]; then
+    shift
+    exec python -m pytest "$@"
+else
+    exec uvicorn main:app --host 0.0.0.0 --port 8001
+fi
+
