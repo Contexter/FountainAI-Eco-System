@@ -4,7 +4,13 @@ Action Service
 This API manages actions associated with characters and spoken words within a story.
 Data is persisted to SQLite and synchronized with peer services (via dynamic lookup from the API Gateway).
 JWT-based authentication is enforced and Prometheus metrics are exposed.
-The OpenAPI version is forced to 3.0.3 so that Swagger UI renders correctly.
+The OpenAPI version is forced to 3.0.3 for Swagger UI compatibility.
+
+Enhancements in this version:
+- Implements dynamic service discovery via the API Gateway.
+- Integrates with the Notification Service for both sending and (stub for) receiving notifications.
+- Provides a default landing page and a standardized health endpoint.
+- Uses semantic API metadata (camelCase operationIds, clear summaries, and concise descriptions).
 """
 
 import os
@@ -15,6 +21,7 @@ from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Depends, Response, status
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from prometheus_fastapi_instrumentator import Instrumentator
 from dotenv import load_dotenv
@@ -35,7 +42,6 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./action.db")
 API_GATEWAY_URL = os.getenv("API_GATEWAY_URL", "http://gateway:8000")
 JWT_SECRET = os.getenv("JWT_SECRET", "your_jwt_secret_key")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-# The name under which the Central Sequence Service is registered in the API Gateway.
 CENTRAL_SEQUENCE_SERVICE_NAME = os.getenv("CENTRAL_SEQUENCE_SERVICE_NAME", "central_sequence_service")
 
 # -----------------------------------------------------------------------------
@@ -68,7 +74,7 @@ class Action(Base):
 
 Base.metadata.create_all(bind=engine)
 
-def get_db():
+def get_db() -> Session:
     db = SessionLocal()
     try:
         yield db
@@ -111,9 +117,12 @@ class ActionResponse(BaseModel):
     comment: Optional[str]
 
 # -----------------------------------------------------------------------------
-# Helper Function for Service Discovery via API Gateway
+# Helper Functions for Service Discovery & Notification
 # -----------------------------------------------------------------------------
 def get_service_url(service_name: str) -> str:
+    """
+    Lookup the URL for a given service using the API Gateway's lookup endpoint.
+    """
     try:
         r = httpx.get(f"{API_GATEWAY_URL}/lookup/{service_name}", timeout=5.0)
         r.raise_for_status()
@@ -124,6 +133,21 @@ def get_service_url(service_name: str) -> str:
     except Exception as e:
         logger.error(f"Service discovery failed for '{service_name}': {e}")
         raise HTTPException(status_code=503, detail=f"Service discovery failed for '{service_name}'")
+
+def send_notification(subject: str, message: str):
+    """
+    Sends a notification via the Notification Service.
+    This stub currently sends notifications and is designed to be extended for receiving notifications.
+    """
+    try:
+        notification_url = get_service_url("notification_service")
+        payload = {"subject": subject, "message": message}
+        response = httpx.post(f"{notification_url}/notifications", json=payload, timeout=5.0)
+        response.raise_for_status()
+        logger.info("Notification sent: %s", subject)
+    except Exception as e:
+        logger.error("Failed to send notification: %s", e)
+        # Do not block core functionality on notification failure.
 
 # -----------------------------------------------------------------------------
 # FastAPI Application Initialization
@@ -141,13 +165,80 @@ app = FastAPI(
 Instrumentator().instrument(app).expose(app)
 
 # -----------------------------------------------------------------------------
-# Endpoints
+# Default Landing Page
 # -----------------------------------------------------------------------------
-@app.get("/health", tags=["Health"])
+@app.get(
+    "/",
+    response_class=HTMLResponse,
+    tags=["Landing"],
+    operation_id="getLandingPage",
+    summary="Display landing page",
+    description="Returns a styled landing page with service name, version, and links to API docs and health check."
+)
+def landing_page():
+    try:
+        html_content = """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>{service_title}</title>
+          <style>
+            body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; height: 100vh; }}
+            .container {{ background: #fff; padding: 40px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; max-width: 600px; margin: auto; }}
+            h1 {{ font-size: 2.5rem; color: #333; }}
+            p {{ font-size: 1.1rem; color: #666; line-height: 1.6; }}
+            a {{ color: #007acc; text-decoration: none; font-weight: bold; }}
+            a:hover {{ text-decoration: underline; }}
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h1>Welcome to {service_title}</h1>
+            <p><strong>Version:</strong> {service_version}</p>
+            <p>This service manages actions associated with characters and spoken words.</p>
+            <p>
+              Visit the <a href="/docs">API Documentation</a> or check the <a href="/health">Health Status</a>.
+            </p>
+          </div>
+        </body>
+        </html>
+        """
+        filled_html = html_content.format(
+            service_title=str(app.title),
+            service_version=str(app.version)
+        )
+        return HTMLResponse(content=filled_html, status_code=200)
+    except Exception as e:
+        logger.error("Error generating landing page: %s", e)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+# -----------------------------------------------------------------------------
+# Health Endpoint
+# -----------------------------------------------------------------------------
+@app.get(
+    "/health",
+    response_model=dict,
+    tags=["Health"],
+    operation_id="getHealthStatus",
+    summary="Retrieve service health status",
+    description="Returns the current health status of the service as a JSON object (e.g., {'status': 'healthy'})."
+)
 def health_check():
     return {"status": "healthy"}
 
-@app.get("/actions", response_model=List[ActionResponse], tags=["Actions"])
+# -----------------------------------------------------------------------------
+# Action Endpoints
+# -----------------------------------------------------------------------------
+@app.get(
+    "/actions",
+    response_model=List[ActionResponse],
+    tags=["Actions"],
+    operation_id="listActions",
+    summary="List actions",
+    description="Returns a list of actions, optionally filtered by characterId or keyword."
+)
 def list_actions(
     characterId: Optional[int] = None,
     scriptId: Optional[int] = None,
@@ -172,24 +263,28 @@ def list_actions(
         ) for a in actions
     ]
 
-@app.post("/actions", response_model=ActionResponse, status_code=status.HTTP_201_CREATED, tags=["Actions"])
+@app.post(
+    "/actions",
+    response_model=ActionResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Actions"],
+    operation_id="createAction",
+    summary="Create a new action",
+    description="Creates a new action by obtaining a global sequence number from the Central Sequence Service and storing it in the database."
+)
 def create_action(
     request: ActionCreateRequest,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Creates a new action. This endpoint integrates with the Central Sequence Service
-    to obtain a globally consistent sequence number.
-    """
-    # Discover the Central Sequence Service URL
+    # Discover the Central Sequence Service URL.
     try:
         central_sequence_url = get_service_url(CENTRAL_SEQUENCE_SERVICE_NAME)
     except Exception as e:
         logger.error(f"Central Sequence Service lookup failed: {e}")
         raise HTTPException(status_code=503, detail="Central Sequence Service unavailable")
 
-    # Construct payload for the Central Sequence Service using its expected fields
+    # Prepare payload for the Central Sequence Service.
     sequence_payload = {
         "elementType": "action",
         "elementId": request.characterId,
@@ -197,7 +292,7 @@ def create_action(
     }
 
     try:
-        # Call the Central Sequence Service's /sequence endpoint
+        # Call the Central Sequence Service to get the next sequence number.
         response = httpx.post(f"{central_sequence_url}/sequence", json=sequence_payload, timeout=5.0)
         response.raise_for_status()
         sequence_data = response.json()
@@ -205,10 +300,10 @@ def create_action(
         if next_seq is None:
             raise ValueError("No sequenceNumber returned")
     except Exception as e:
-        logger.error(f"Failed to obtain sequence number from Central Sequence Service: {e}")
+        logger.error(f"Failed to obtain sequence number: {e}")
         raise HTTPException(status_code=503, detail="Failed to obtain sequence number")
 
-    # Create the new action using the sequence number from the central service
+    # Create the new action using the obtained sequence number.
     new_action = Action(
         description=request.description,
         characterId=request.characterId,
@@ -220,6 +315,9 @@ def create_action(
     db.refresh(new_action)
     logger.info(f"Action created with ID: {new_action.actionId}")
 
+    # Send a notification about action creation.
+    send_notification("Action Created", f"Action ID {new_action.actionId} created with sequence number {next_seq}.")
+
     return ActionResponse(
         actionId=new_action.actionId,
         description=new_action.description,
@@ -228,7 +326,14 @@ def create_action(
         comment=new_action.comment
     )
 
-@app.get("/actions/{actionId}", response_model=ActionResponse, tags=["Actions"])
+@app.get(
+    "/actions/{actionId}",
+    response_model=ActionResponse,
+    tags=["Actions"],
+    operation_id="getActionById",
+    summary="Retrieve action by ID",
+    description="Returns the action details for the specified actionId."
+)
 def get_action_by_id(actionId: int, db: Session = Depends(get_db)):
     action = db.query(Action).filter(Action.actionId == actionId).first()
     if not action:
@@ -241,7 +346,14 @@ def get_action_by_id(actionId: int, db: Session = Depends(get_db)):
         comment=action.comment
     )
 
-@app.patch("/actions/{actionId}", response_model=ActionResponse, tags=["Actions"])
+@app.patch(
+    "/actions/{actionId}",
+    response_model=ActionResponse,
+    tags=["Actions"],
+    operation_id="updateAction",
+    summary="Update an action",
+    description="Updates an existing action's description and comment."
+)
 def update_action(actionId: int, request: ActionUpdateRequest, db: Session = Depends(get_db)):
     action = db.query(Action).filter(Action.actionId == actionId).first()
     if not action:
@@ -260,7 +372,14 @@ def update_action(actionId: int, request: ActionUpdateRequest, db: Session = Dep
         comment=action.comment
     )
 
-@app.delete("/actions/{actionId}", status_code=status.HTTP_204_NO_CONTENT, tags=["Actions"])
+@app.delete(
+    "/actions/{actionId}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["Actions"],
+    operation_id="deleteAction",
+    summary="Delete an action",
+    description="Deletes the specified action from the database."
+)
 def delete_action(actionId: int, db: Session = Depends(get_db)):
     action = db.query(Action).filter(Action.actionId == actionId).first()
     if not action:
