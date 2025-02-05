@@ -1,3 +1,6 @@
+Below is the updated, comprehensive README for the FountainAI Eco‑System repository. The updates include additional requirements for dynamic service discovery and for both sending and receiving notifications via the Notification Service. The document retains all existing sections with the new requirements integrated into the "Inter‑Service Integration" section, as well as the standard project layout and default landing/health endpoints.
+
+---
 
 # FountainAI Eco‑System
 
@@ -31,7 +34,9 @@ Every FountainAI service must satisfy the following criteria:
 - **Dynamic Service Discovery:**  
   Every service must implement dynamic service discovery by leveraging the API Gateway’s lookup endpoint. This allows services to dynamically resolve peer service URLs at runtime.
 - **Notification Service Integration:**  
-  Each service must include a standardized interface for sending AND receiving notifications via the central Notification Service—even if not used immediately—to facilitate future enhancements.
+  Each service must include a standardized interface for sending **and receiving notifications** via the central Notification Service—even if not used immediately—to facilitate future enhancements.  
+  - **Sending Notifications:** Services should provide a helper function or client to push notifications (e.g., alerts, status changes) to the Notification Service.  
+  - **Receiving Notifications:** Services should implement (or stub) an endpoint or interface that can receive notifications, enabling future two-way communication.
 
 ### Observability
 - **Prometheus Metrics:**  
@@ -79,7 +84,7 @@ service-name/
   A shell script that acts as the container’s entrypoint. It typically decides whether to start the service (using Uvicorn) or run tests (using pytest).
 
 - **main.py:**  
-  Contains the entire FastAPI application. It includes extended header comments describing the service, configuration setup, database initialization, authentication, Pydantic models, helper functions (e.g., for service discovery), endpoint definitions (with semantic metadata), custom OpenAPI generation, and the application’s entry point.
+  Contains the entire FastAPI application. It includes extended header comments describing the service, configuration setup, database initialization, authentication, Pydantic models, helper functions (e.g., for service discovery and notifications), endpoint definitions (with semantic metadata), custom OpenAPI generation, and the application’s entry point.
 
 - **tests/test_main.py:**  
   Contains a comprehensive test suite that validates the service’s functionality. Tests should simulate external dependencies (using monkeypatching) to ensure isolated testing.
@@ -152,7 +157,7 @@ Every service must implement a health endpoint to facilitate monitoring. The hea
 - **Semantic Metadata:**  
   - **operationId:** `getHealthStatus` (camelCase)
   - **Summary:** `Retrieve service health status`
-  - **Description:** `Returns the current health status of the service as a JSON object.`
+  - **Description:** `Returns the current health status of the service as a JSON object (e.g., {'status': 'healthy'}).`
   
 **Example Implementation:**
 
@@ -166,11 +171,11 @@ def health_check():
 
 ## Reverse Proxy Exposure (Caddy Integration)
 
-The FountainAI ecosystem is exposed externally via a Caddy reverse proxy that handles TLS termination, HTTP-to-HTTPS redirection, and subdomain routing. Key requirements include:
+The FountainAI ecosystem is exposed externally via a Caddy reverse proxy that handles TLS termination, HTTP-to-HTTPS redirection, and subdomain routing.
 
 - **Caddyfile:**  
-  A file named `Caddyfile` should reside at the root of the repository and be mounted into the Caddy container (e.g., at `/etc/caddy/Caddyfile`). This file defines reverse proxy rules for each service using subdomains under the TLD `fountain.coach`.
-  
+  A file named `Caddyfile` must reside at the root of the repository and be mounted into the Caddy container (e.g., at `/etc/caddy/Caddyfile`). It defines reverse proxy rules for each service using subdomains under the TLD `fountain.coach`.
+
 - **DNS Configuration:**  
   AWS Route 53 (or a similar provider) must be configured with a wildcard record (`*.fountain.coach`) that points to the host running Caddy.
 
@@ -275,17 +280,17 @@ caddy:
 ## Summary
 
 A FountainAI service must be:
-- **Modular and Containerized:** Built with FastAPI, using a standardized project layout (.env, requirements.txt, Dockerfile, entrypoint.sh, main.py, and tests).
-- **Configurable and Secure:** Loading settings from a `.env` file, implementing JWT or API key authentication with RBAC.
+- **Modular and Containerized:** Built with FastAPI, following a standardized project layout (.env, requirements.txt, Dockerfile, entrypoint.sh, main.py, and tests).
+- **Configurable and Secure:** Loading settings from a `.env` file, and implementing JWT or API key authentication with RBAC.
 - **Persistent and Validated:** Using SQLAlchemy for data persistence and Pydantic for model validation.
-- **Interoperable:** Featuring dynamic service discovery and a standardized interface for integrating with the Notification Service.
+- **Interoperable:** Featuring dynamic service discovery (via the API Gateway lookup endpoint) and a standardized interface for both sending and receiving notifications via the Notification Service.
 - **Observable:** Exposing Prometheus metrics and standardized logging.
 - **Well-Documented:** Generating an OpenAPI specification with semantic metadata (camelCase operationIds, clear summaries, and concise descriptions ≤300 characters).
 - **User-Friendly:** Providing a default landing page and a consistent health endpoint.
 - **Exposed via Caddy:** Accessible via subdomains under `fountain.coach` managed by a Caddy reverse proxy.
 
-This specification serves as the blueprint for creating new services within the FountainAI Eco‑System, ensuring they are clear, consistent, and future‑proof.
+This comprehensive specification serves as the blueprint for creating new services within the FountainAI Eco‑System, ensuring consistency, clarity, and future‑proofing across the platform.
 
---- 
+---
 
-This comprehensive README can be used for internal documentation, prompting new service creation sessions, and guiding developers in the consistent implementation of FountainAI services.
+This README is intended for internal documentation and as a prompt for new service creation sessions, ensuring every new service adheres to these high standards.
