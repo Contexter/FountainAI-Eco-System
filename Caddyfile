@@ -1,0 +1,78 @@
+{
+    # Global options
+    # Provide an email for TLS certificate management; if you're using AWS ACM or another method, adjust accordingly.
+    email mail@benedikt-eickhoff.de
+    # Optional: enable debugging/logging options here.
+}
+
+# Reverse proxy for each service based on its subdomain:
+
+2fa.fountain.coach {
+    reverse_proxy 2fa_service:8004
+}
+
+action.fountain.coach {
+    reverse_proxy action_service:8000
+}
+
+central_gateway.fountain.coach {
+    reverse_proxy central_gateway:8000
+}
+
+central_sequence.fountain.coach {
+    reverse_proxy central_sequence_service:8000
+}
+
+character.fountain.coach {
+    reverse_proxy character_service:8000
+}
+
+core.fountain.coach {
+    reverse_proxy core_script_management_service:8000
+}
+
+rbac.fountain.coach {
+    reverse_proxy fountainai-rbac:8001
+}
+
+kms.fountain.coach {
+    reverse_proxy kms-app:8002
+}
+
+notification.fountain.coach {
+    reverse_proxy notification-service:8003
+}
+
+paraphrase.fountain.coach {
+    reverse_proxy paraphrase_service:8000
+}
+
+performer.fountain.coach {
+    reverse_proxy performer_service:8000
+}
+
+session.fountain.coach {
+    reverse_proxy session_context_service:8000
+}
+
+spokenword.fountain.coach {
+    reverse_proxy spokenword_service:8000
+}
+
+story.fountain.coach {
+    reverse_proxy story_factory_service:8000
+}
+
+typesense.fountain.coach {
+    reverse_proxy typesense_client_service:8001
+}
+
+# (Optional) If you want to expose the underlying Typesense server directly:
+# typesense-server.fountain.coach {
+#     reverse_proxy typesense:8108
+# }
+
+# Fallback: catch-all for any subdomain that isn't explicitly matched.
+*.fountain.coach {
+    reverse_proxy central_gateway:8000
+}

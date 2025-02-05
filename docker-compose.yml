@@ -26,8 +26,7 @@ services:
       - ./central_gateway/.env
     networks:
       - fountainai-net
-    ports:
-      - "9003:8000"
+    # Do not expose ports externally; Caddy will route to this service internally.
 
   central_sequence_service:
     build: ./central_sequence_service
@@ -166,9 +165,26 @@ services:
     ports:
       - "8108:8108"
 
+  caddy:
+    image: caddy:2
+    container_name: caddy
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - fountainai-net
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - central_gateway
+
 networks:
   fountainai-net:
     driver: bridge
 
 volumes:
   typesense-data:
+  caddy_data:
+  caddy_config:
