@@ -31,7 +31,7 @@ Every FountainAI service must satisfy the following criteria:
 - **Dynamic Service Discovery:**  
   Every service must implement dynamic service discovery by leveraging the API Gateway’s lookup endpoint. This allows services to dynamically resolve peer service URLs at runtime.
 - **Notification Service Integration:**  
-  Each service must include a standardized interface for sending notifications via the central Notification Service—even if not used immediately—to facilitate future enhancements.
+  Each service must include a standardized interface for sending AND receiving notifications via the central Notification Service—even if not used immediately—to facilitate future enhancements.
 
 ### Observability
 - **Prometheus Metrics:**  
