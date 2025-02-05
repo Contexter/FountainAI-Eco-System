@@ -15,10 +15,30 @@ def setup_database():
     Base.metadata.create_all(bind=SessionLocal().bind)
     yield
 
+def test_landing_page(client: TestClient):
+    response = client.get("/")
+    assert response.status_code == 200
+    # Check that the landing page contains key phrases
+    html = response.text.lower()
+    assert "welcome to" in html
+    assert "api documentation" in html
+    assert "health status" in html
+
 def test_health_check(client: TestClient):
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json()["status"] == "healthy"
+    data = response.json()
+    assert data["status"] == "healthy"
+    assert "timestamp" in data
+
+def test_service_discovery(client: TestClient, monkeypatch):
+    # Override get_service_url to always return a dummy URL.
+    monkeypatch.setattr("main.get_service_url", lambda service_name: "http://dummy_url")
+    response = client.get("/service-discovery", params={"service_name": "dummy_service"})
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["service"] == "dummy_service"
+    assert data["discovered_url"] == "http://dummy_url"
 
 def test_create_story(client: TestClient):
     payload = {
@@ -27,7 +47,11 @@ def test_create_story(client: TestClient):
         "description": "A sample script for testing",
         "sections": ["Introduction", "Climax", "Conclusion"],
         "story": [{"element": "Intro", "detail": "Story begins..."}],
-        "orchestration": {"csoundFilePath": "/path/to/csound", "lilyPondFilePath": "/path/to/lilypond", "midiFilePath": "/path/to/midi"},
+        "orchestration": {
+            "csoundFilePath": "/path/to/csound",
+            "lilyPondFilePath": "/path/to/lilypond",
+            "midiFilePath": "/path/to/midi"
+        },
         "comment": "Creating a test story"
     }
     response = client.post("/stories", json=payload)
@@ -35,6 +59,7 @@ def test_create_story(client: TestClient):
     data = response.json()
     assert data["title"] == "Test Script"
     assert data["author"] == "Alice"
+    # Ensure sections are correctly returned.
     assert data["sections"] == payload["sections"]
 
 def test_get_full_story(client: TestClient):

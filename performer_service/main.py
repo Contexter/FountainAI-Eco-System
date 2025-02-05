@@ -1,19 +1,50 @@
 """
-Performer Service
-=================
+Performer Service API
+=====================
 
-This service handles the creation, retrieval, updating, and management of performers within a story.
-Data is persisted to SQLite and synchronized with search systems via dynamic service discovery from the API Gateway.
-It integrates with the Central Sequence Service by assigning a sequence number to each performer.
-JWT-based authentication is enforced, Prometheus metrics are exposed, and the OpenAPI version is forced to 3.0.3.
+Purpose:
+    This service handles the creation, retrieval, updating, and management of performers within a story.
+    Each performer is assigned a globally consistent sequence number via integration with the Central Sequence Service.
+    Data is persisted in an SQLite database and can be synchronized with external search systems via dynamic service discovery
+    from the API Gateway.
+
+Key Integrations:
+    - FastAPI: Provides the web framework and automatic OpenAPI documentation.
+    - SQLAlchemy & SQLite: Used for data persistence.
+    - JWT-based Authentication: Enforces security using HTTPBearer; endpoints for creating and updating performers require valid tokens.
+    - Dynamic Service Discovery: Enables runtime resolution of peer service URLs via the API Gateway's lookup endpoint.
+    - Prometheus: Exposes performance and health metrics via prometheus_fastapi_instrumentator.
+    - Custom OpenAPI: Forces the OpenAPI schema version to 3.0.3 for Swagger UI compatibility.
+    - Default Landing Page & Health Endpoint: Provides a user-friendly landing page and a standard health check.
+
+Usage:
+    The service is containerized and should be deployed along with other FountainAI microservices.
+    Environment variables (such as SERVICE_PORT, DATABASE_URL, API_GATEWAY_URL, JWT_SECRET, and JWT_ALGORITHM)
+    are loaded from a .env file.
+
+Endpoints:
+    GET  /                     - Default landing page (HTML).
+    GET  /health               - Health check endpoint.
+    GET  /service-discovery    - Dynamic service discovery endpoint.
+    POST /notifications        - Notification stub endpoint.
+    GET  /performers           - List performers.
+    POST /performers           - Create a new performer (JWT auth required).
+    GET  /performers/{performerId} - Retrieve performer details.
+    PATCH /performers/{performerId} - Update performer details (JWT auth required).
+
+Note:
+    The service integrates with the Central Sequence Service to assign a sequence number
+    and uses dynamic service discovery to interact with other ecosystem services.
+
 """
 
 import os
 import sys
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict
 
-from fastapi import FastAPI, HTTPException, Depends, Query, status, Response
+from fastapi import FastAPI, HTTPException, Depends, Query, status, Response, Path, Body
+from fastapi.responses import HTMLResponse
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
@@ -67,7 +98,7 @@ class Performer(Base):
 
 Base.metadata.create_all(bind=engine)
 
-def get_db():
+def get_db() -> Session:
     db = SessionLocal()
     try:
         yield db
@@ -79,7 +110,7 @@ def get_db():
 # -----------------------------------------------------------------------------
 http_bearer = HTTPBearer()
 
-def verify_jwt(token: str) -> dict:
+def verify_jwt(token: str) -> Dict:
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         return payload
@@ -87,7 +118,7 @@ def verify_jwt(token: str) -> dict:
         logger.error(f"JWT validation failed: {e}")
         raise HTTPException(status_code=401, detail="Invalid token")
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(http_bearer)):
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(http_bearer)) -> Dict:
     return verify_jwt(credentials.credentials)
 
 # -----------------------------------------------------------------------------
@@ -112,19 +143,20 @@ class PerformerResponse(BaseModel):
     isSyncedToTypesense: bool
     comment: Optional[str]
 
-class StandardError(BaseModel):
-    errorCode: str
-    message: str
-    details: Optional[str]
+    class Config:
+        orm_mode = True
 
 # -----------------------------------------------------------------------------
-# Helper Function for Service Discovery via API Gateway
+# Helper Function for Dynamic Service Discovery
 # -----------------------------------------------------------------------------
 def get_service_url(service_name: str) -> str:
     try:
         r = httpx.get(f"{API_GATEWAY_URL}/lookup/{service_name}", timeout=5.0)
         r.raise_for_status()
-        return r.json().get("url")
+        url = r.json().get("url")
+        if not url:
+            raise ValueError("No URL returned from service lookup.")
+        return url
     except Exception as e:
         logger.error(f"Service discovery failed for '{service_name}': {e}")
         raise HTTPException(status_code=503, detail=f"Service discovery failed for '{service_name}'")
@@ -137,7 +169,7 @@ app = FastAPI(
     description=(
         "This service handles the creation, retrieval, updating, and management of performers within the story. "
         "Data is persisted to SQLite and synchronized with search systems via dynamic service discovery from the API Gateway. "
-        "It integrates with the Central Sequence Service to ensure performers are returned in the correct order."
+        "It integrates with the Central Sequence Service to assign sequence numbers to performers."
     ),
     version="4.0.0"
 )
@@ -145,22 +177,80 @@ app = FastAPI(
 Instrumentator().instrument(app).expose(app)
 
 # -----------------------------------------------------------------------------
+# Default Landing Page Endpoint
+# -----------------------------------------------------------------------------
+@app.get("/", response_class=HTMLResponse, tags=["Landing"], operation_id="getLandingPage", summary="Display landing page", description="Returns a styled landing page with service name, version, and links to API docs and health check.")
+def landing_page():
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>{service_title}</title>
+      <style>
+        body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; height: 100vh; }}
+        .container {{ background: #fff; padding: 40px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); text-align: center; max-width: 600px; margin: auto; }}
+        h1 {{ font-size: 2.5rem; color: #333; }}
+        p {{ font-size: 1.1rem; color: #666; line-height: 1.6; }}
+        a {{ color: #007acc; text-decoration: none; font-weight: bold; }}
+        a:hover {{ text-decoration: underline; }}
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>Welcome to {service_title}</h1>
+        <p><strong>Version:</strong> {service_version}</p>
+        <p>{service_description}</p>
+        <p>
+          Visit the <a href="/docs">API Documentation</a> or check the 
+          <a href="/health">Health Status</a>.
+        </p>
+      </div>
+    </body>
+    </html>
+    """
+    filled_html = html_content.format(
+        service_title=app.title,
+        service_version=app.version,
+        service_description="This service manages performers within the FountainAI ecosystem."
+    )
+    return HTMLResponse(content=filled_html, status_code=200)
+
+# -----------------------------------------------------------------------------
+# Health Check Endpoint
+# -----------------------------------------------------------------------------
+@app.get("/health", response_model=dict, tags=["Health"], operation_id="getHealthStatus", summary="Retrieve service health status", description="Returns the current health status of the service as a JSON object (e.g., {'status': 'healthy'}).")
+def health_check():
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
+# -----------------------------------------------------------------------------
+# Dynamic Service Discovery Endpoint
+# -----------------------------------------------------------------------------
+@app.get("/service-discovery", tags=["Service Discovery"], operation_id="getServiceDiscovery", summary="Discover peer services", description="Queries the API Gateway's lookup endpoint to resolve the URL of a specified service.")
+def service_discovery(service_name: str = Query(..., description="Name of the service to discover")):
+    discovered_url = get_service_url(service_name)
+    return {"service": service_name, "discovered_url": discovered_url}
+
+# -----------------------------------------------------------------------------
+# Notification Receiving Stub Endpoint
+# -----------------------------------------------------------------------------
+@app.post("/notifications", tags=["Notification"], operation_id="receiveNotification", summary="Receive notifications", description="Stub endpoint for receiving notifications from the central Notification Service.")
+def receive_notification(payload: dict):
+    logger.info("Received notification payload: %s", payload)
+    return {"message": "Notification received (stub)."}
+
+# -----------------------------------------------------------------------------
 # Endpoints for Performer Service
 # -----------------------------------------------------------------------------
-@app.get("/health", tags=["Health"])
-def health_check():
-    return {"status": "healthy"}
-
-@app.get("/performers", response_model=List[PerformerResponse], tags=["Performers"])
+@app.get("/performers", response_model=List[PerformerResponse], tags=["Performers"], operation_id="listPerformers", summary="List performers", description="Retrieves a list of performers, optionally filtered by query parameters.")
 def list_performers(
     characterId: Optional[int] = Query(None, description="(Optional) Filter by character ID"),
     scriptId: Optional[int] = Query(None, description="(Optional) Filter by script ID"),
     db: Session = Depends(get_db)
 ):
-    # For this example, filtering by scriptId is simulated – in a real scenario, the Performer model would have such a field.
     query = db.query(Performer)
     if characterId is not None:
-        # Simulated: assume performers associated with a given character have matching names or IDs.
         query = query.filter(Performer.performerId == characterId)
     performers = query.all()
     return [
@@ -173,11 +263,10 @@ def list_performers(
         ) for p in performers
     ]
 
-@app.post("/performers", response_model=PerformerResponse, status_code=status.HTTP_201_CREATED, tags=["Performers"])
-def create_performer(request: PerformerCreateRequest, db: Session = Depends(get_db)):
-    # Simulate Central Sequence Service integration by assigning next sequence number.
-    max_seq = db.query(Performer).order_by(Performer.sequenceNumber.desc()).first()
-    next_seq = max_seq.sequenceNumber + 1 if max_seq else 1
+@app.post("/performers", response_model=PerformerResponse, status_code=status.HTTP_201_CREATED, tags=["Performers"], operation_id="createPerformer", summary="Create a performer", description="Creates a new performer with an assigned sequence number. JWT authentication is enforced.")
+def create_performer(request: PerformerCreateRequest, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    max_entry = db.query(Performer).order_by(Performer.sequenceNumber.desc()).first()
+    next_seq = max_entry.sequenceNumber + 1 if max_entry else 1
     new_performer = Performer(
         name=request.name,
         sequenceNumber=next_seq,
@@ -196,7 +285,7 @@ def create_performer(request: PerformerCreateRequest, db: Session = Depends(get_
         comment=new_performer.comment
     )
 
-@app.get("/performers/{performerId}", response_model=PerformerResponse, tags=["Performers"])
+@app.get("/performers/{performerId}", response_model=PerformerResponse, tags=["Performers"], operation_id="getPerformerById", summary="Retrieve performer details", description="Retrieves details for a performer by ID.")
 def get_performer_by_id(performerId: int, db: Session = Depends(get_db)):
     p = db.query(Performer).filter(Performer.performerId == performerId).first()
     if not p:
@@ -209,14 +298,14 @@ def get_performer_by_id(performerId: int, db: Session = Depends(get_db)):
         comment=p.comment
     )
 
-@app.patch("/performers/{performerId}", response_model=PerformerResponse, tags=["Performers"])
-def patch_performer(performerId: int, request: PerformerPatchRequest, db: Session = Depends(get_db)):
+@app.patch("/performers/{performerId}", response_model=PerformerResponse, tags=["Performers"], operation_id="updatePerformer", summary="Update performer", description="Updates a performer's details (name and/or comment). JWT authentication is enforced.")
+def patch_performer(performerId: int, request: PerformerPatchRequest, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     p = db.query(Performer).filter(Performer.performerId == performerId).first()
     if not p:
         raise HTTPException(status_code=404, detail="Performer not found")
     if request.name is not None:
         p.name = request.name
-    p.comment = request.comment  # Always update comment per our requirement
+    p.comment = request.comment
     db.commit()
     db.refresh(p)
     logger.info(f"Performer updated with ID: {p.performerId}")
@@ -252,4 +341,3 @@ app.openapi = custom_openapi
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=SERVICE_PORT)
-

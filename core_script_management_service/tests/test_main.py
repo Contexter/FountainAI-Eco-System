@@ -2,6 +2,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 from main import app, SessionLocal, Script, Base
+import httpx
 
 @pytest.fixture(scope="module")
 def client():
@@ -15,14 +16,22 @@ def setup_database():
     # Create tables and clear existing data
     Base.metadata.drop_all(bind=SessionLocal().bind)
     Base.metadata.create_all(bind=SessionLocal().bind)
-    # Optionally, insert initial test data here
     yield
-    # Teardown can be added here if needed
+    # Teardown steps can be added here if necessary
 
 def test_health_check(client: TestClient):
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "healthy"
+
+def test_landing_page(client: TestClient):
+    response = client.get("/")
+    assert response.status_code == 200, response.text
+    html = response.text.lower()
+    # Check for key phrases in the landing page HTML.
+    assert "welcome to" in html
+    assert "api documentation" in html
+    assert "health status" in html
 
 def test_create_script(client: TestClient):
     payload = {
@@ -67,3 +76,19 @@ def test_patch_script(client: TestClient):
     data = patch_response.json()
     assert data["title"] == "Patched Script Title"
     assert data["author"] == "Robert"
+
+def test_service_discovery(client: TestClient, monkeypatch):
+    # Override the service discovery helper to return a dummy URL
+    monkeypatch.setattr("main.get_service_url", lambda service_name: "http://dummy_service_url")
+    response = client.get("/service-discovery", params={"service_name": "dummy_service"})
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["service"] == "dummy_service"
+    assert data["discovered_url"] == "http://dummy_service_url"
+
+def test_receive_notification(client: TestClient):
+    payload = {"message": "Test notification"}
+    response = client.post("/notifications", json=payload)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert "notification received" in data["message"].lower()

@@ -1,19 +1,27 @@
 """
-Paraphrase Service
-==================
+Production-Grade FastAPI Application for Paraphrase Service
+===========================================================
 
-This service manages paraphrases associated with characters, actions, and spoken words within a story.
-It supports creating, retrieving, updating, and deleting paraphrases. Data is persisted to SQLite and 
-(supposed to be) synchronized with Typesense via a relay service. JWT-based API key security is enforced,
-and Prometheus metrics are exposed. The OpenAPI version is forced to 3.0.3 so that Swagger UI works correctly.
+Features:
+  - Manages paraphrases associated with characters, actions, and spoken words within a story.
+  - Supports creating, retrieving, updating, and deleting paraphrases.
+  - Data is persisted to SQLite and synchronized with Typesense via a relay service.
+  - JWT-based authentication is enforced.
+  - Exposes Prometheus metrics for observability.
+  - Custom OpenAPI schema is forced to version 3.0.3 for Swagger UI compatibility.
+  - Provides a default landing page, health check endpoint, dynamic service discovery, and a notification stub.
+  
+This service is part of the FountainAI Eco‑System.
 """
 
 import os
 import sys
 import logging
-from typing import List, Optional
+from datetime import datetime
+from typing import List, Optional, Dict
 
-from fastapi import FastAPI, HTTPException, Depends, Query, status
+from fastapi import FastAPI, HTTPException, Depends, Query, status, Path, Body
+from fastapi.responses import HTMLResponse, Response
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
@@ -34,8 +42,8 @@ load_dotenv()
 SERVICE_PORT = int(os.getenv("SERVICE_PORT", "8000"))
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./paraphrase.db")
 API_GATEWAY_URL = os.getenv("API_GATEWAY_URL", "http://gateway:8000")
-JWT_SECRET = os.getenv("JWT_SECRET", "your_jwt_secret_key")
-JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+JWT_SECRET = os.environ.get("JWT_SECRET", "your_jwt_secret_key")
+JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 
 # -----------------------------------------------------------------------------
 # Logging Configuration
@@ -79,7 +87,7 @@ def get_db():
 # -----------------------------------------------------------------------------
 http_bearer = HTTPBearer()
 
-def verify_jwt(token: str) -> dict:
+def verify_jwt(token: str) -> Dict:
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         return payload
@@ -87,7 +95,7 @@ def verify_jwt(token: str) -> dict:
         logger.error(f"JWT validation failed: {e}")
         raise HTTPException(status_code=401, detail="Invalid token")
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(http_bearer)):
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(http_bearer)) -> Dict:
     return verify_jwt(credentials.credentials)
 
 # -----------------------------------------------------------------------------
@@ -96,12 +104,12 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(h
 class ParaphraseCreateRequest(BaseModel):
     originalId: int = Field(..., description="Identifier of the original entity this paraphrase is linked to")
     text: str = Field(..., description="The text of the paraphrase")
-    commentary: str = Field(..., description="Reasons explaining why this paraphrase is as it is")
+    commentary: str = Field(..., description="Explanation for the paraphrase")
     comment: str = Field(..., description="Contextual explanation for creating the paraphrase")
 
 class ParaphraseUpdateRequest(BaseModel):
     text: str = Field(..., description="Updated text of the paraphrase")
-    commentary: str = Field(..., description="Updated commentary explaining the paraphrase")
+    commentary: str = Field(..., description="Updated explanation for the paraphrase")
     comment: str = Field(..., description="Contextual explanation for updating the paraphrase")
 
 class ParaphraseResponse(BaseModel):
@@ -117,13 +125,16 @@ class StandardError(BaseModel):
     details: Optional[str]
 
 # -----------------------------------------------------------------------------
-# Helper Function for Service Discovery via API Gateway
+# Helper Function for Dynamic Service Discovery
 # -----------------------------------------------------------------------------
 def get_service_url(service_name: str) -> str:
     try:
         r = httpx.get(f"{API_GATEWAY_URL}/lookup/{service_name}", timeout=5.0)
         r.raise_for_status()
-        return r.json().get("url")
+        url = r.json().get("url")
+        if not url:
+            raise ValueError("No URL returned from service lookup.")
+        return url
     except Exception as e:
         logger.error(f"Service discovery failed for '{service_name}': {e}")
         raise HTTPException(status_code=503, detail=f"Service discovery failed for '{service_name}'")
@@ -144,22 +155,83 @@ app = FastAPI(
 Instrumentator().instrument(app).expose(app)
 
 # -----------------------------------------------------------------------------
-# Endpoints for Paraphrase Service
+# Default Landing Page Endpoint
 # -----------------------------------------------------------------------------
-@app.get("/health", tags=["Health"])
-def health_check():
-    return {"status": "healthy"}
+@app.get("/", response_class=HTMLResponse, tags=["Landing"], operation_id="getLandingPage", summary="Display landing page", description="Returns a styled landing page with service name, version, and links to API docs and health check.")
+def landing_page():
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>{service_title}</title>
+      <style>
+        body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; height: 100vh; }}
+        .container {{ background: #fff; padding: 40px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); text-align: center; max-width: 600px; margin: auto; }}
+        h1 {{ font-size: 2.5rem; color: #333; }}
+        p {{ font-size: 1.1rem; color: #666; line-height: 1.6; }}
+        a {{ color: #007acc; text-decoration: none; font-weight: bold; }}
+        a:hover {{ text-decoration: underline; }}
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>Welcome to {service_title}</h1>
+        <p><strong>Version:</strong> {service_version}</p>
+        <p>{service_description}</p>
+        <p>
+          Visit the <a href="/docs">API Documentation</a> or check the 
+          <a href="/health">Health Status</a>.
+        </p>
+      </div>
+    </body>
+    </html>
+    """
+    filled_html = html_content.format(
+        service_title=app.title,
+        service_version=app.version,
+        service_description="This service provides paraphrase management within the FountainAI ecosystem."
+    )
+    return HTMLResponse(content=filled_html, status_code=200)
 
-@app.get("/paraphrases", response_model=List[ParaphraseResponse], tags=["Paraphrases"])
+# -----------------------------------------------------------------------------
+# Health Check Endpoint
+# -----------------------------------------------------------------------------
+@app.get("/health", response_model=dict, tags=["Health"], operation_id="getHealthStatus", summary="Retrieve service health status", description="Returns the current health status of the service as a JSON object (e.g., {'status': 'healthy'}).")
+def health_check():
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
+# -----------------------------------------------------------------------------
+# Dynamic Service Discovery Endpoint
+# -----------------------------------------------------------------------------
+@app.get("/service-discovery", tags=["Service Discovery"], operation_id="getServiceDiscovery", summary="Discover peer services", description="Queries the API Gateway's lookup endpoint to resolve the URL of a specified service.")
+def service_discovery(service_name: str = Query(..., description="Name of the service to discover")):
+    discovered_url = get_service_url(service_name)
+    return {"service": service_name, "discovered_url": discovered_url}
+
+# -----------------------------------------------------------------------------
+# Notification Receiving Stub Endpoint
+# -----------------------------------------------------------------------------
+@app.post("/notifications", tags=["Notification"], operation_id="receiveNotification", summary="Receive notifications", description="Stub endpoint for receiving notifications from the central Notification Service.")
+def receive_notification(payload: dict):
+    logger.info("Received notification payload: %s", payload)
+    return {"message": "Notification received (stub)."}
+
+# -----------------------------------------------------------------------------
+# API Endpoints for Paraphrase Service
+# -----------------------------------------------------------------------------
+
+@app.get("/paraphrases", response_model=List[ParaphraseResponse], tags=["Paraphrases"], operation_id="listParaphrases", summary="List paraphrases", description="Retrieves a list of paraphrases. Supports filtering by original ID or keyword.")
 def list_paraphrases(
-    characterId: Optional[int] = Query(None, description="Filter paraphrases by character ID"),
-    actionId: Optional[int] = Query(None, description="Filter paraphrases by action ID"),
-    spokenWordId: Optional[int] = Query(None, description="Filter paraphrases by spoken word ID"),
-    keyword: Optional[str] = Query(None, description="Search for paraphrases containing specific keywords"),
+    characterId: Optional[int] = Query(None, description="Filter by character ID"),
+    actionId: Optional[int] = Query(None, description="Filter by action ID"),
+    spokenWordId: Optional[int] = Query(None, description="Filter by spoken word ID"),
+    keyword: Optional[str] = Query(None, description="Filter paraphrases containing the keyword"),
     db: Session = Depends(get_db)
 ):
     query = db.query(Paraphrase)
-    # For simplicity, we assume originalId represents the linking field (you might adjust based on your schema)
+    # For simplicity, assume originalId is used for all filters.
     if characterId is not None:
         query = query.filter(Paraphrase.originalId == characterId)
     if actionId is not None:
@@ -179,7 +251,7 @@ def list_paraphrases(
         ) for p in paraphrases
     ]
 
-@app.post("/paraphrases", response_model=ParaphraseResponse, status_code=status.HTTP_201_CREATED, tags=["Paraphrases"])
+@app.post("/paraphrases", response_model=ParaphraseResponse, status_code=status.HTTP_201_CREATED, tags=["Paraphrases"], operation_id="createParaphrase", summary="Create a paraphrase", description="Creates a new paraphrase with provided details.")
 def create_paraphrase(request: ParaphraseCreateRequest, db: Session = Depends(get_db)):
     new_paraphrase = Paraphrase(
         originalId=request.originalId,
@@ -190,7 +262,7 @@ def create_paraphrase(request: ParaphraseCreateRequest, db: Session = Depends(ge
     db.add(new_paraphrase)
     db.commit()
     db.refresh(new_paraphrase)
-    logger.info(f"Paraphrase created with ID: {new_paraphrase.paraphraseId}")
+    logger.info("Paraphrase created with ID: %s", new_paraphrase.paraphraseId)
     return ParaphraseResponse(
         paraphraseId=new_paraphrase.paraphraseId,
         originalId=new_paraphrase.originalId,
@@ -199,7 +271,7 @@ def create_paraphrase(request: ParaphraseCreateRequest, db: Session = Depends(ge
         comment=new_paraphrase.comment
     )
 
-@app.get("/paraphrases/{paraphraseId}", response_model=ParaphraseResponse, tags=["Paraphrases"])
+@app.get("/paraphrases/{paraphraseId}", response_model=ParaphraseResponse, tags=["Paraphrases"], operation_id="getParaphraseById", summary="Retrieve a paraphrase", description="Retrieves a paraphrase by its ID.")
 def get_paraphrase_by_id(paraphraseId: int, db: Session = Depends(get_db)):
     p = db.query(Paraphrase).filter(Paraphrase.paraphraseId == paraphraseId).first()
     if not p:
@@ -212,7 +284,7 @@ def get_paraphrase_by_id(paraphraseId: int, db: Session = Depends(get_db)):
         comment=p.comment
     )
 
-@app.patch("/paraphrases/{paraphraseId}", response_model=ParaphraseResponse, tags=["Paraphrases"])
+@app.patch("/paraphrases/{paraphraseId}", response_model=ParaphraseResponse, tags=["Paraphrases"], operation_id="updateParaphrase", summary="Update a paraphrase", description="Updates a paraphrase's text, commentary, and comment.")
 def update_paraphrase(paraphraseId: int, request: ParaphraseUpdateRequest, db: Session = Depends(get_db)):
     p = db.query(Paraphrase).filter(Paraphrase.paraphraseId == paraphraseId).first()
     if not p:
@@ -222,7 +294,7 @@ def update_paraphrase(paraphraseId: int, request: ParaphraseUpdateRequest, db: S
     p.comment = request.comment
     db.commit()
     db.refresh(p)
-    logger.info(f"Paraphrase updated with ID: {p.paraphraseId}")
+    logger.info("Paraphrase updated with ID: %s", p.paraphraseId)
     return ParaphraseResponse(
         paraphraseId=p.paraphraseId,
         originalId=p.originalId,
@@ -231,14 +303,14 @@ def update_paraphrase(paraphraseId: int, request: ParaphraseUpdateRequest, db: S
         comment=p.comment
     )
 
-@app.delete("/paraphrases/{paraphraseId}", status_code=status.HTTP_204_NO_CONTENT, tags=["Paraphrases"])
+@app.delete("/paraphrases/{paraphraseId}", status_code=status.HTTP_204_NO_CONTENT, tags=["Paraphrases"], operation_id="deleteParaphrase", summary="Delete a paraphrase", description="Deletes a paraphrase by its ID.")
 def delete_paraphrase(paraphraseId: int, db: Session = Depends(get_db)):
     p = db.query(Paraphrase).filter(Paraphrase.paraphraseId == paraphraseId).first()
     if not p:
         raise HTTPException(status_code=404, detail="Paraphrase not found")
     db.delete(p)
     db.commit()
-    logger.info(f"Paraphrase deleted with ID: {paraphraseId}")
+    logger.info("Paraphrase deleted with ID: %s", paraphraseId)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 # -----------------------------------------------------------------------------
@@ -265,4 +337,3 @@ app.openapi = custom_openapi
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=SERVICE_PORT)
-

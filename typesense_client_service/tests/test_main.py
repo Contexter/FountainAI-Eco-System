@@ -1,7 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
-from main import app
-from main import typesense_client
+from main import app, typesense_client, Base, SessionLocal, APIKey
 
 client = TestClient(app)
 
@@ -27,7 +26,6 @@ dummy_typesense_client = {
     "collections": DummyCollections()
 }
 
-# Override the typesense_client.collections attribute
 @pytest.fixture(autouse=True)
 def override_typesense_client(monkeypatch):
     monkeypatch.setattr(typesense_client, "collections", dummy_typesense_client["collections"])
@@ -51,12 +49,13 @@ def test_create_collection():
         "default_sorting_field": "id"
     }
     response = client.post("/collections", json=payload)
-    assert response.status_code == 200
+    # The endpoint returns status 200 by default.
+    assert response.status_code == 200, response.text
     data = response.json()
     assert data["name"] == "new_collection"
 
 def test_get_collection():
-    # First, simulate an existing collection
+    # Simulate an existing collection.
     payload = {
         "name": "existing_collection",
         "fields": [
@@ -64,13 +63,12 @@ def test_get_collection():
         ],
         "default_sorting_field": ""
     }
-    # Create collection (dummy implementation will use "create" and then "retrieve")
+    # Create collection (dummy implementation uses create then retrieve)
     response_create = client.post("/collections", json=payload)
-    assert response_create.status_code == 200
+    assert response_create.status_code == 200, response_create.text
 
-    # Now, retrieve it
+    # Retrieve the collection.
     response = client.get("/collections/existing_collection")
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     data = response.json()
     assert data["name"] == "existing_collection"
-

@@ -1,20 +1,34 @@
 """
-Spoken Word Service
-===================
+Spoken Word Service API
+=======================
 
-This service manages lines of spoken words within a story. Lines are grouped into speeches and 
-can be interspersed with actions. The service supports CRUD operations on lines, which are persisted 
-to SQLite and synchronized with search systems via dynamic service discovery from the API Gateway. 
-JWT-based authentication is enforced, and Prometheus instrumentation is integrated. The OpenAPI 
-version is forced to 3.0.3.
+Purpose:
+    This service manages lines of spoken words within a story. Lines are grouped into speeches and 
+    can be interspersed with actions. The service supports CRUD operations on lines, which are persisted 
+    to SQLite and synchronized with search systems via dynamic service discovery from the API Gateway.
+    JWT-based authentication is enforced on endpoints that modify data. Prometheus instrumentation is integrated,
+    and the OpenAPI schema is forced to version 3.0.3 for Swagger UI compatibility.
+
+Key Integrations:
+    - FastAPI: Provides the framework and automatic OpenAPI documentation.
+    - SQLAlchemy & SQLite: Used for data persistence.
+    - JWT Authentication: Enforces security using HTTPBearer.
+    - Dynamic Service Discovery: Resolves peer service URLs via the API Gateway.
+    - Prometheus: Metrics exposed via prometheus_fastapi_instrumentator.
+    - Default Landing Page & Health Check: Enhances user-friendliness.
+
+Usage:
+    Configuration is loaded via a .env file. Endpoints are secured as needed with JWT-based authentication.
 """
 
 import os
 import sys
 import logging
-from typing import List, Optional
+from datetime import datetime
+from typing import List, Optional, Dict
 
-from fastapi import FastAPI, HTTPException, Depends, status, Query
+from fastapi import FastAPI, HTTPException, Depends, Query, status, Response, Path, Body
+from fastapi.responses import HTMLResponse
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
@@ -61,7 +75,7 @@ Base = declarative_base()
 class Line(Base):
     __tablename__ = "lines"
     lineId = Column(Integer, primary_key=True, index=True)
-    scriptId = Column(Integer, nullable=False)   # For filtering by script
+    scriptId = Column(Integer, nullable=False)
     speechId = Column(Integer, nullable=False)
     characterId = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
@@ -70,7 +84,7 @@ class Line(Base):
 
 Base.metadata.create_all(bind=engine)
 
-def get_db():
+def get_db() -> Session:
     db = SessionLocal()
     try:
         yield db
@@ -82,7 +96,7 @@ def get_db():
 # -----------------------------------------------------------------------------
 http_bearer = HTTPBearer()
 
-def verify_jwt(token: str) -> dict:
+def verify_jwt(token: str) -> Dict:
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         return payload
@@ -90,7 +104,7 @@ def verify_jwt(token: str) -> dict:
         logger.error(f"JWT validation failed: {e}")
         raise HTTPException(status_code=401, detail="Invalid token")
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(http_bearer)):
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(http_bearer)) -> Dict:
     return verify_jwt(credentials.credentials)
 
 # -----------------------------------------------------------------------------
@@ -98,9 +112,9 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(h
 # -----------------------------------------------------------------------------
 class LineCreateRequest(BaseModel):
     scriptId: int = Field(..., description="Unique identifier of the script")
-    speechId: int = Field(..., description="ID of the speech this line will belong to")
+    speechId: int = Field(..., description="ID of the speech this line belongs to")
     characterId: int = Field(..., description="ID of the character delivering this line")
-    content: str = Field(..., description="Content of the line")
+    content: str = Field(..., description="Content of the spoken word line")
     comment: str = Field(..., description="Contextual explanation for creating the line")
 
 class LineUpdateRequest(BaseModel):
@@ -116,13 +130,16 @@ class LineResponse(BaseModel):
     sequenceNumber: int
     comment: Optional[str]
 
+    class Config:
+        orm_mode = True
+
 class StandardError(BaseModel):
     errorCode: str
     message: str
     details: Optional[str]
 
 # -----------------------------------------------------------------------------
-# Helper Function for Service Discovery via API Gateway
+# Helper Function for Dynamic Service Discovery
 # -----------------------------------------------------------------------------
 def get_service_url(service_name: str) -> str:
     try:
@@ -142,10 +159,9 @@ def get_service_url(service_name: str) -> str:
 app = FastAPI(
     title="Spoken Word Service",
     description=(
-        "This service manages lines of spoken words within a story. Lines are grouped into speeches and "
-        "can be interspersed with actions. The service supports CRUD operations on lines, which are persisted "
-        "to SQLite and synchronized with search systems via dynamic service discovery from the API Gateway. "
-        "JWT-based authentication is enforced."
+        "This service manages lines of spoken words within a story. Lines are grouped into speeches and may be interspersed with actions. "
+        "It supports CRUD operations on lines, which are persisted to SQLite and synchronized with search systems via dynamic service discovery from the API Gateway. "
+        "JWT-based authentication is enforced on endpoints that modify data."
     ),
     version="4.0.0"
 )
@@ -153,20 +169,77 @@ app = FastAPI(
 Instrumentator().instrument(app).expose(app)
 
 # -----------------------------------------------------------------------------
-# Endpoints for Spoken Word Service
+# Default Landing Page Endpoint
 # -----------------------------------------------------------------------------
-@app.get("/health", tags=["Health"], openapi_extra={"operationId": "getHealthStatus"})
-def health_check():
-    return {"status": "healthy"}
+@app.get("/", response_class=HTMLResponse, tags=["Landing"], operation_id="getLandingPage", summary="Display landing page", description="Returns a styled landing page with service name, version, and links to API docs and health check.")
+def landing_page():
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>{service_title}</title>
+      <style>
+        body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; height: 100vh; }}
+        .container {{ background: #fff; padding: 40px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); text-align: center; max-width: 600px; margin: auto; }}
+        h1 {{ font-size: 2.5rem; color: #333; }}
+        p {{ font-size: 1.1rem; color: #666; line-height: 1.6; }}
+        a {{ color: #007acc; text-decoration: none; font-weight: bold; }}
+        a:hover {{ text-decoration: underline; }}
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>Welcome to {service_title}</h1>
+        <p><strong>Version:</strong> {service_version}</p>
+        <p>{service_description}</p>
+        <p>
+          Visit the <a href="/docs">API Documentation</a> or check the 
+          <a href="/health">Health Status</a>.
+        </p>
+      </div>
+    </body>
+    </html>
+    """
+    filled_html = html_content.format(
+        service_title=app.title,
+        service_version=app.version,
+        service_description="Manage spoken word lines within the FountainAI ecosystem."
+    )
+    return HTMLResponse(content=filled_html, status_code=200)
 
-@app.get("/lines", response_model=List[LineResponse], tags=["Lines"],
-         openapi_extra={"operationId": "listLines"})
+# -----------------------------------------------------------------------------
+# Health Check Endpoint
+# -----------------------------------------------------------------------------
+@app.get("/health", response_model=dict, tags=["Health"], operation_id="getHealthStatus", summary="Retrieve service health status", description="Returns the current health status of the service as a JSON object (e.g., {'status': 'healthy'}).")
+def health_check():
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
+# -----------------------------------------------------------------------------
+# Dynamic Service Discovery Endpoint
+# -----------------------------------------------------------------------------
+@app.get("/service-discovery", tags=["Service Discovery"], operation_id="getServiceDiscovery", summary="Discover peer services", description="Queries the API Gateway's lookup endpoint to resolve the URL of a specified service.")
+def service_discovery(service_name: str = Query(..., description="Name of the service to discover")):
+    discovered_url = get_service_url(service_name)
+    return {"service": service_name, "discovered_url": discovered_url}
+
+# -----------------------------------------------------------------------------
+# Notification Receiving Stub Endpoint
+# -----------------------------------------------------------------------------
+@app.post("/notifications", tags=["Notification"], operation_id="receiveNotification", summary="Receive notifications", description="Stub endpoint for receiving notifications from the central Notification Service.")
+def receive_notification(payload: dict):
+    logger.info("Received notification payload: %s", payload)
+    return {"message": "Notification received (stub)."}
+
+# -----------------------------------------------------------------------------
+# Endpoints for Spoken Word Lines
+# -----------------------------------------------------------------------------
+@app.get("/lines", response_model=List[LineResponse], tags=["Lines"], operation_id="listLines", summary="List lines", description="Retrieves a list of spoken word lines filtered by script ID and optional parameters.")
 def list_lines(
     scriptId: int = Query(..., description="Unique identifier of the script"),
     characterId: Optional[int] = Query(None, description="Filter by character ID"),
     speechId: Optional[int] = Query(None, description="Filter by speech ID"),
-    sectionId: Optional[int] = Query(None, description="Filter by section ID (not stored)"),
-    actionId: Optional[int] = Query(None, description="Filter by action ID (not stored)"),
     keyword: Optional[str] = Query(None, description="Search for lines containing specific keywords"),
     db: Session = Depends(get_db)
 ):
@@ -190,39 +263,31 @@ def list_lines(
         ) for l in lines
     ]
 
-@app.post("/lines", response_model=LineResponse, status_code=status.HTTP_201_CREATED, tags=["Lines"],
-          openapi_extra={"operationId": "createLine"})
-def create_line(request: LineCreateRequest, db: Session = Depends(get_db)):
-    """
-    Creates a new spoken word line. This endpoint integrates with the Central Sequence Service
-    to obtain a globally consistent sequence number for the line. The contextual comment provided 
-    in the request is forwarded to the Central Sequence Service.
-    """
-    # Discover the URL for the Central Sequence Service via the API Gateway.
+@app.post("/lines", response_model=LineResponse, status_code=status.HTTP_201_CREATED, tags=["Lines"], operation_id="createLine", summary="Create a line", description="Creates a new spoken word line. JWT authentication is enforced.")
+def create_line(request: LineCreateRequest, db: Session = Depends(get_db), current_user: Dict = Depends(get_current_user)):
+    # Integrate with the Central Sequence Service to obtain the next sequence number.
     try:
         central_sequence_url = get_service_url("central_sequence_service")
     except Exception as e:
         logger.error(f"Central Sequence Service lookup failed: {e}")
         raise HTTPException(status_code=503, detail="Central Sequence Service unavailable")
-
-    # Construct payload for the Central Sequence Service using the request's comment.
+    
     sequence_payload = {
         "elementType": "spokenWord",
-        "elementId": 0,  # Dummy value, as lineId is auto-generated
-        "comment": request.comment  # Use the provided contextual comment
+        "elementId": 0,
+        "comment": request.comment
     }
-
     try:
-        response = httpx.post(f"{central_sequence_url}/sequence", json=sequence_payload, timeout=5.0)
-        response.raise_for_status()
-        sequence_data = response.json()
-        next_seq = sequence_data.get("sequenceNumber")
+        seq_response = httpx.post(f"{central_sequence_url}/sequence", json=sequence_payload, timeout=5.0)
+        seq_response.raise_for_status()
+        seq_data = seq_response.json()
+        next_seq = seq_data.get("sequenceNumber")
         if next_seq is None:
             raise ValueError("No sequenceNumber returned")
     except Exception as e:
-        logger.error(f"Failed to obtain sequence number from Central Sequence Service: {e}")
+        logger.error(f"Failed to obtain sequence number: {e}")
         raise HTTPException(status_code=503, detail="Failed to obtain sequence number")
-
+    
     new_line = Line(
         scriptId=request.scriptId,
         speechId=request.speechId,
@@ -245,8 +310,7 @@ def create_line(request: LineCreateRequest, db: Session = Depends(get_db)):
         comment=new_line.comment
     )
 
-@app.get("/lines/{lineId}", response_model=LineResponse, tags=["Lines"],
-         openapi_extra={"operationId": "getLineById"})
+@app.get("/lines/{lineId}", response_model=LineResponse, tags=["Lines"], operation_id="getLineById", summary="Retrieve a line", description="Retrieves a spoken word line by its ID.")
 def get_line_by_id(lineId: int, db: Session = Depends(get_db)):
     line = db.query(Line).filter(Line.lineId == lineId).first()
     if not line:
@@ -261,15 +325,13 @@ def get_line_by_id(lineId: int, db: Session = Depends(get_db)):
         comment=line.comment
     )
 
-@app.patch("/lines/{lineId}", response_model=LineResponse, tags=["Lines"],
-           openapi_extra={"operationId": "updateLine"})
-def update_line(lineId: int, request: LineUpdateRequest, db: Session = Depends(get_db)):
+@app.patch("/lines/{lineId}", response_model=LineResponse, tags=["Lines"], operation_id="updateLine", summary="Update a line", description="Updates a spoken word line's content and comment. JWT authentication is enforced.")
+def update_line(lineId: int, request: LineUpdateRequest, db: Session = Depends(get_db), current_user: Dict = Depends(get_current_user)):
     line = db.query(Line).filter(Line.lineId == lineId).first()
     if not line:
         raise HTTPException(status_code=404, detail="Line not found")
     line.content = request.content
-    if request.comment is not None:
-        line.comment = request.comment
+    line.comment = request.comment
     db.commit()
     db.refresh(line)
     logger.info(f"Line updated with ID: {line.lineId}")

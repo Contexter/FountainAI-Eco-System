@@ -2,19 +2,34 @@
 Session and Context Management API
 ==================================
 
-This API manages user sessions and context data for narrative elements.
-It persists session data to SQLite and (optionally) synchronizes with Typesense for search.
-It integrates with other services via dynamic lookup from the API Gateway.
-JWT-based RBAC is used to secure endpoints.
-The OpenAPI version is forced to 3.0.3 so that Swagger UI works correctly.
+Purpose:
+    This API manages user sessions and context data for narrative elements.
+    Session data is persisted to SQLite and may optionally be synchronized with search systems.
+    The service integrates with other FountainAI services via dynamic lookup from the API Gateway.
+    JWT-based RBAC is used to secure endpoints, ensuring that only authenticated users can create, update, or view session data.
+
+Key Integrations:
+    - FastAPI: Provides a modern web framework with automatic OpenAPI documentation.
+    - SQLAlchemy & SQLite: Used for persistent storage.
+    - JWT Authentication: Enforces security using JWT tokens.
+    - Dynamic Service Discovery: Enables runtime resolution of peer service URLs via the API Gateway.
+    - Prometheus: Exposes metrics via prometheus_fastapi_instrumentator.
+    - Custom OpenAPI: Forces the OpenAPI schema version to 3.0.3 for Swagger UI compatibility.
+    - Default Landing Page & Health Check: Provides user-friendly endpoints for basic service information.
+
+Usage:
+    Configuration is loaded from a .env file. Endpoints are secured via JWT, and dynamic service discovery
+    enables inter-service communication in the FountainAI Eco‑System.
 """
 
 import os
 import sys
 import logging
-from typing import List, Optional
+from datetime import datetime
+from typing import List, Optional, Dict
 
-from fastapi import FastAPI, HTTPException, Request, Response, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, Query, status, Response, Path, Body
+from fastapi.responses import HTMLResponse
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
@@ -61,13 +76,13 @@ Base = declarative_base()
 class SessionContext(Base):
     __tablename__ = "sessions"
     sessionId = Column(Integer, primary_key=True, index=True)
-    # Stored as a comma-separated list for simplicity; in production, use a related table.
+    # For simplicity, context is stored as a comma-separated string.
     context = Column(String, nullable=False)
     comment = Column(String, nullable=True)
 
 Base.metadata.create_all(bind=engine)
 
-def get_db():
+def get_db() -> Session:
     db = SessionLocal()
     try:
         yield db
@@ -79,15 +94,19 @@ def get_db():
 # -----------------------------------------------------------------------------
 http_bearer = HTTPBearer()
 
-def verify_jwt(token: str) -> dict:
+def verify_jwt(token: str) -> Dict:
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         return payload
     except JWTError as e:
-        logger.error(f"JWT validation failed: {e}")
-        raise HTTPException(status_code=401, detail="Invalid token")
+        logger.error("JWT validation failed: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(http_bearer)):
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(http_bearer)) -> Dict:
     return verify_jwt(credentials.credentials)
 
 # -----------------------------------------------------------------------------
@@ -106,21 +125,27 @@ class SessionResponse(BaseModel):
     context: List[str]
     comment: Optional[str]
 
+    class Config:
+        orm_mode = True
+
 class StandardError(BaseModel):
     errorCode: str
     message: str
     details: Optional[str]
 
 # -----------------------------------------------------------------------------
-# Helper Function for Service Discovery via API Gateway
+# Helper Function for Dynamic Service Discovery
 # -----------------------------------------------------------------------------
 def get_service_url(service_name: str) -> str:
     try:
         r = httpx.get(f"{API_GATEWAY_URL}/lookup/{service_name}", timeout=5.0)
         r.raise_for_status()
-        return r.json().get("url")
+        url = r.json().get("url")
+        if not url:
+            raise ValueError("No URL returned from service lookup.")
+        return url
     except Exception as e:
-        logger.error(f"Service discovery failed for '{service_name}': {e}")
+        logger.error("Service discovery failed for '%s': %s", service_name, e)
         raise HTTPException(status_code=503, detail=f"Service discovery failed for '{service_name}'")
 
 # -----------------------------------------------------------------------------
@@ -130,8 +155,9 @@ app = FastAPI(
     title="Session and Context Management API",
     description=(
         "This API manages user sessions and context data for narrative elements. "
-        "It integrates with other FountainAI services via the API Gateway for dynamic service discovery. "
-        "Data is persisted to SQLite and may be synchronized with search services."
+        "It integrates with other FountainAI services via dynamic service discovery from the API Gateway. "
+        "Data is persisted to SQLite and may be synchronized with search services. "
+        "JWT-based RBAC secures all endpoints."
     ),
     version="4.0.0"
 )
@@ -139,17 +165,68 @@ app = FastAPI(
 Instrumentator().instrument(app).expose(app)
 
 # -----------------------------------------------------------------------------
-# Endpoints
+# Default Landing Page Endpoint
 # -----------------------------------------------------------------------------
-@app.get("/health", tags=["Health"])
-def health_check():
-    return {"status": "healthy"}
+@app.get("/", response_class=HTMLResponse, tags=["Landing"], operation_id="getLandingPage", summary="Display landing page", description="Returns a styled landing page with service name, version, and links to API docs and health check.")
+def landing_page():
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>{service_title}</title>
+      <style>
+        body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; height: 100vh; }}
+        .container {{ background: #fff; padding: 40px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); text-align: center; max-width: 600px; margin: auto; }}
+        h1 {{ font-size: 2.5rem; color: #333; }}
+        p {{ font-size: 1.1rem; color: #666; line-height: 1.6; }}
+        a {{ color: #007acc; text-decoration: none; font-weight: bold; }}
+        a:hover {{ text-decoration: underline; }}
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>Welcome to {service_title}</h1>
+        <p><strong>Version:</strong> {service_version}</p>
+        <p>{service_description}</p>
+        <p>
+          Visit the <a href="/docs">API Documentation</a> or check the 
+          <a href="/health">Health Status</a>.
+        </p>
+      </div>
+    </body>
+    </html>
+    """
+    filled_html = html_content.format(
+        service_title=app.title,
+        service_version=app.version,
+        service_description="This service manages user sessions and context data for narrative elements."
+    )
+    return HTMLResponse(content=filled_html, status_code=200)
 
-@app.get("/sessions", response_model=List[SessionResponse], tags=["Sessions"])
-def list_sessions(context: Optional[str] = None, db: Session = Depends(get_db)):
+# -----------------------------------------------------------------------------
+# Health Check Endpoint
+# -----------------------------------------------------------------------------
+@app.get("/health", response_model=dict, tags=["Health"], operation_id="getHealthStatus", summary="Retrieve service health status", description="Returns the current health status of the service as a JSON object (e.g., {'status': 'healthy'}).")
+def health_check():
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
+# -----------------------------------------------------------------------------
+# Dynamic Service Discovery Endpoint
+# -----------------------------------------------------------------------------
+@app.get("/service-discovery", tags=["Service Discovery"], operation_id="getServiceDiscovery", summary="Discover peer services", description="Queries the API Gateway's lookup endpoint to resolve the URL of a specified service.")
+def service_discovery(service_name: str = Query(..., description="Name of the service to discover")):
+    discovered_url = get_service_url(service_name)
+    return {"service": service_name, "discovered_url": discovered_url}
+
+# -----------------------------------------------------------------------------
+# Session Management Endpoints (Secured with JWT)
+# -----------------------------------------------------------------------------
+
+@app.get("/sessions", response_model=List[SessionResponse], tags=["Sessions"], operation_id="listSessions", summary="List sessions", description="Retrieves a list of sessions. Requires JWT authentication.")
+def list_sessions(db: Session = Depends(get_db), current_user: Dict = Depends(get_current_user)):
     query = db.query(SessionContext)
-    if context:
-        query = query.filter(SessionContext.context.like(f"%{context}%"))
     sessions = query.all()
     result = []
     for s in sessions:
@@ -157,9 +234,8 @@ def list_sessions(context: Optional[str] = None, db: Session = Depends(get_db)):
         result.append(SessionResponse(sessionId=s.sessionId, context=context_list, comment=s.comment))
     return result
 
-@app.post("/sessions", response_model=SessionResponse, status_code=status.HTTP_201_CREATED, tags=["Sessions"])
-def create_session(request: SessionCreateRequest, db: Session = Depends(get_db)):
-    # Store the context list as a comma-separated string (for simplicity)
+@app.post("/sessions", response_model=SessionResponse, status_code=status.HTTP_201_CREATED, tags=["Sessions"], operation_id="createSession", summary="Create a session", description="Creates a new session with context data. Requires JWT authentication.")
+def create_session(request: SessionCreateRequest, db: Session = Depends(get_db), current_user: Dict = Depends(get_current_user)):
     new_session = SessionContext(
         context=",".join(request.context),
         comment=request.comment
@@ -170,16 +246,16 @@ def create_session(request: SessionCreateRequest, db: Session = Depends(get_db))
     logger.info(f"Session created with ID: {new_session.sessionId}")
     return SessionResponse(sessionId=new_session.sessionId, context=request.context, comment=new_session.comment)
 
-@app.get("/sessions/{sessionId}", response_model=SessionResponse, tags=["Sessions"])
-def get_session_by_id(sessionId: int, db: Session = Depends(get_db)):
+@app.get("/sessions/{sessionId}", response_model=SessionResponse, tags=["Sessions"], operation_id="getSessionById", summary="Retrieve a session", description="Retrieves a session by its ID. Requires JWT authentication.")
+def get_session_by_id(sessionId: int, db: Session = Depends(get_db), current_user: Dict = Depends(get_current_user)):
     session_obj = db.query(SessionContext).filter(SessionContext.sessionId == sessionId).first()
     if not session_obj:
         raise HTTPException(status_code=404, detail="Session not found")
     context_list = session_obj.context.split(",") if session_obj.context else []
     return SessionResponse(sessionId=session_obj.sessionId, context=context_list, comment=session_obj.comment)
 
-@app.patch("/sessions/{sessionId}", response_model=SessionResponse, tags=["Sessions"])
-def update_session(sessionId: int, request: SessionUpdateRequest, db: Session = Depends(get_db)):
+@app.patch("/sessions/{sessionId}", response_model=SessionResponse, tags=["Sessions"], operation_id="updateSession", summary="Update a session", description="Updates a session's context and comment. Requires JWT authentication.")
+def update_session(sessionId: int, request: SessionUpdateRequest, db: Session = Depends(get_db), current_user: Dict = Depends(get_current_user)):
     session_obj = db.query(SessionContext).filter(SessionContext.sessionId == sessionId).first()
     if not session_obj:
         raise HTTPException(status_code=404, detail="Session not found")

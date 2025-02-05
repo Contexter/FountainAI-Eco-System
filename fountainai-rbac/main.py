@@ -1,7 +1,6 @@
 """
-main.py
-
 Production-Grade FastAPI Application for Authentication & RBAC Service API
+=========================================================================
 
 Features:
     - Secure user registration and login with SQLite persistent storage.
@@ -9,12 +8,14 @@ Features:
     - Role-based access control.
     - Password hashing using PassLib.
     - Environment configuration via .env.
-    - Health check endpoint at the root.
+    - Default landing page at the root with API documentation links.
+    - Separate health check endpoint.
     - Detailed logging and Prometheus-based monitoring.
     - Custom OpenAPI schema version (3.1.0).
 
 Endpoints:
-    GET  /                 - Health check endpoint.
+    GET  /                 - Default landing page (HTML).
+    GET  /health           - Health check endpoint.
     POST /register         - Register a new user.
     POST /login            - User login (returns access and refresh tokens).
     POST /token/refresh    - Refresh an access token using a refresh token.
@@ -22,6 +23,8 @@ Endpoints:
     GET  /users/{username} - Retrieve a specific user's details.
     PATCH /users/{username} - Update user information.
     DELETE /users/{username} - Delete a user (admin only).
+    GET  /service-discovery - Dynamic service discovery endpoint.
+    POST /notifications    - Notification receiving stub.
 
 Notes:
     - Replace SQLite with a production-grade database when needed.
@@ -40,8 +43,10 @@ from fastapi import (
     Depends,
     status,
     Path,
-    Body
+    Body,
+    Query
 )
+from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.openapi.utils import get_openapi
 from jose import JWTError, jwt
@@ -56,17 +61,16 @@ from sqlalchemy import create_engine
 
 # Prometheus Instrumentator for monitoring
 from prometheus_fastapi_instrumentator import Instrumentator
+import httpx
 
 # -----------------------------------------------------------------------------
-# Load Environment Variables
+# Load Environment Variables and Configure Logging
 # -----------------------------------------------------------------------------
 load_dotenv()  # Loads the .env file
 SECRET_KEY = os.environ.get("SECRET_KEY", "fallback_secret_key")
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./app.db")
+API_GATEWAY_URL = os.environ.get("API_GATEWAY_URL", "http://gateway:8000")
 
-# -----------------------------------------------------------------------------
-# Logging Configuration
-# -----------------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -103,8 +107,6 @@ class RefreshToken(Base):
     
     owner = relationship("User", back_populates="refresh_tokens")
 
-
-# Create tables if they don't exist
 Base.metadata.create_all(bind=engine)
 
 # -----------------------------------------------------------------------------
@@ -154,7 +156,6 @@ def create_refresh_token(subject: str, db: Session, expires_delta: Optional[time
     to_encode = {"sub": subject, "exp": expire, "type": "refresh", "jti": jti}
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     
-    # Retrieve the user to store refresh token; assume user exists.
     user = db.query(User).filter(User.username == subject).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found for refresh token creation.")
@@ -183,6 +184,38 @@ def decode_token(token: str) -> Dict:
             detail="Could not validate credentials.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+# -----------------------------------------------------------------------------
+# Helper Function for Dynamic Service Discovery
+# -----------------------------------------------------------------------------
+def get_service_url(service_name: str) -> str:
+    """
+    Queries the API Gateway's lookup endpoint to resolve the URL of the given service.
+    """
+    try:
+        response = httpx.get(f"{API_GATEWAY_URL}/lookup/{service_name}", timeout=5.0)
+        response.raise_for_status()
+        url = response.json().get("url")
+        if not url:
+            raise ValueError("No URL returned from service lookup.")
+        return url
+    except Exception as e:
+        logger.error("Service discovery failed for '%s': %s", service_name, e)
+        raise HTTPException(status_code=503, detail=f"Service discovery failed for '{service_name}'")
+
+# -----------------------------------------------------------------------------
+# Notification Service Integration (Stub)
+# -----------------------------------------------------------------------------
+# This stub endpoint will serve as the interface for receiving notifications.
+# Future enhancements will implement full two-way communication.
+# Note: This endpoint is defined before the API endpoints.
+from fastapi import APIRouter
+notification_router = APIRouter()
+
+@notification_router.post("/notifications", tags=["Notification"], operation_id="receiveNotification", summary="Receive notifications", description="Stub endpoint for receiving notifications from the central Notification Service.")
+def receive_notification(payload: dict):
+    logger.info("Received notification payload: %s", payload)
+    return {"message": "Notification received (stub)."}
 
 # -----------------------------------------------------------------------------
 # Pydantic Models for Request and Response Schemas
@@ -275,12 +308,15 @@ app = FastAPI(
     servers=[{"url": "http://localhost:8001", "description": "Local development server"}]
 )
 
+# Include the notification router
+app.include_router(notification_router)
+
 # -----------------------------------------------------------------------------
-# Custom OpenAPI Schema Generation to Override OpenAPI Version to 3.1.0
+# Custom OpenAPI Schema Generation to Override OpenAPI Version to 3.0.3
 # -----------------------------------------------------------------------------
 def custom_openapi():
     """
-    Generate a custom OpenAPI schema with version set to 3.1.0.
+    Generate a custom OpenAPI schema with version set to 3.0.3.
     """
     if app.openapi_schema:
         return app.openapi_schema
@@ -302,29 +338,56 @@ app.openapi = custom_openapi
 Instrumentator().instrument(app).expose(app)
 
 # -----------------------------------------------------------------------------
-# Health Check Endpoint
-# -----------------------------------------------------------------------------
-@app.get("/", tags=["Health"], summary="Health Check")
-async def health_check():
-    """
-    Basic health check endpoint.
-    
-    Returns a simple JSON response indicating that the service is running.
-    """
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
-
-# -----------------------------------------------------------------------------
 # API Endpoints
 # -----------------------------------------------------------------------------
 
-@app.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED, tags=["Users"], operation_id="register_user")
-async def register_user(user: UserCreate = Body(...), db: Session = Depends(get_db)):
+# Default Landing Page Endpoint
+@app.get("/", response_class=HTMLResponse, tags=["Landing"], operation_id="getLandingPage", summary="Display landing page", description="Returns a styled landing page with service name, version, and links to API docs and health check.")
+def landing_page():
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>{service_title}</title>
+      <style>
+        body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; height: 100vh; }}
+        .container {{ background: #fff; padding: 40px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); text-align: center; max-width: 600px; margin: auto; }}
+        h1 {{ font-size: 2.5rem; color: #333; }}
+        p {{ font-size: 1.1rem; color: #666; line-height: 1.6; }}
+        a {{ color: #007acc; text-decoration: none; font-weight: bold; }}
+        a:hover {{ text-decoration: underline; }}
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>Welcome to {service_title}</h1>
+        <p><strong>Version:</strong> {service_version}</p>
+        <p>{service_description}</p>
+        <p>
+          Visit the <a href="/docs">API Documentation</a> or check the 
+          <a href="/health">Health Status</a>.
+        </p>
+      </div>
+    </body>
+    </html>
     """
-    Register a new user.
+    filled_html = html_content.format(
+        service_title=app.title,
+        service_version=app.version,
+        service_description="This service provides its core authentication and RBAC functionality within the FountainAI ecosystem."
+    )
+    return HTMLResponse(content=filled_html, status_code=200)
 
-    Creates a new user with the provided username, hashed password, and roles.
-    Returns the created user's information.
-    """
+# Health Check Endpoint
+@app.get("/health", response_model=dict, tags=["Health"], operation_id="getHealthStatus", summary="Retrieve service health status", description="Returns the current health status of the service as a JSON object (e.g., {'status': 'healthy'}).")
+def health_check():
+    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+# User Registration Endpoint
+@app.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED, tags=["Users"], operation_id="registerUser", summary="Register a new user", description="Registers a new user with a hashed password and assigned roles.")
+async def register_user(user: UserCreate = Body(...), db: Session = Depends(get_db)):
     if db.query(User).filter(User.username == user.username).first():
         logger.info("Attempted to register an existing user: %s", user.username)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User already exists.")
@@ -337,14 +400,9 @@ async def register_user(user: UserCreate = Body(...), db: Session = Depends(get_
     logger.info("User registered successfully: %s", user.username)
     return UserResponse(username=new_user.username, roles=new_user.roles)
 
-@app.post("/login", response_model=Token, tags=["Users"], operation_id="login_user")
+# User Login Endpoint
+@app.post("/login", response_model=Token, tags=["Users"], operation_id="loginUser", summary="User login", description="Authenticates user and returns access and refresh tokens.")
 async def login_user(user: UserLogin = Body(...), db: Session = Depends(get_db)):
-    """
-    User login.
-
-    Authenticates the user by verifying the username and password.
-    Returns an access token and a refresh token if credentials are valid.
-    """
     stored_user = db.query(User).filter(User.username == user.username).first()
     if not stored_user or not verify_password(user.password, stored_user.hashed_password):
         logger.warning("Invalid login attempt for user: %s", user.username)
@@ -356,14 +414,9 @@ async def login_user(user: UserLogin = Body(...), db: Session = Depends(get_db))
     logger.info("User logged in successfully: %s", user.username)
     return Token(access_token=access_token, refresh_token=refresh_token, token_type="bearer")
 
-@app.post("/token/refresh", response_model=TokenResponse, tags=["Users"], operation_id="refresh_token")
+# Token Refresh Endpoint
+@app.post("/token/refresh", response_model=TokenResponse, tags=["Users"], operation_id="refreshToken", summary="Refresh access token", description="Refreshes an access token using a valid refresh token, and revokes the used refresh token.")
 async def refresh_token(token_refresh: TokenRefresh = Body(...), db: Session = Depends(get_db)):
-    """
-    Refresh an access token.
-
-    Validates the provided refresh token and issues a new access token.
-    Implements token revocation to prevent reuse.
-    """
     try:
         payload = jwt.decode(token_refresh.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError as e:
@@ -380,7 +433,6 @@ async def refresh_token(token_refresh: TokenRefresh = Body(...), db: Session = D
         logger.error("Refresh token payload missing required claims.")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload.")
     
-    # Retrieve the refresh token record from the DB.
     token_record = db.query(RefreshToken).filter(RefreshToken.token_id == jti).first()
     if not token_record:
         logger.error("Refresh token record not found: %s", jti)
@@ -392,11 +444,9 @@ async def refresh_token(token_refresh: TokenRefresh = Body(...), db: Session = D
         logger.error("Refresh token expired: %s", jti)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token expired.")
     
-    # Mark the refresh token as revoked to prevent reuse.
     token_record.revoked = True
     db.commit()
     
-    # Generate a new access token.
     user = db.query(User).filter(User.username == username).first()
     if not user:
         logger.error("User not found for refresh token: %s", username)
@@ -406,29 +456,20 @@ async def refresh_token(token_refresh: TokenRefresh = Body(...), db: Session = D
     logger.info("Access token refreshed for user: %s", username)
     return TokenResponse(access_token=new_access_token, token_type="bearer")
 
-@app.get("/users", response_model=List[UserResponse], tags=["Users"], operation_id="list_users")
+# List Users Endpoint (Admin Only)
+@app.get("/users", response_model=List[UserResponse], tags=["Users"], operation_id="listUsers", summary="List all users", description="Lists all registered users. Requires admin privileges.")
 async def list_users(admin: Dict = Depends(require_admin), db: Session = Depends(get_db)):
-    """
-    List all users.
-
-    Requires admin privileges.
-    Returns a list of all registered users.
-    """
     users = db.query(User).all()
     logger.info("Admin %s retrieved user list.", admin.get("username"))
     return [UserResponse(username=user.username, roles=user.roles) for user in users]
 
-@app.get("/users/{username}", response_model=UserResponse, tags=["Users"], operation_id="get_user")
+# Get User Details Endpoint
+@app.get("/users/{username}", response_model=UserResponse, tags=["Users"], operation_id="getUser", summary="Retrieve user details", description="Retrieves details of a specified user.")
 async def get_user(
     username: str = Path(..., description="The username of the user to retrieve."),
     current_user: Dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Retrieve user details.
-
-    Returns the details of the specified user.
-    """
     user = db.query(User).filter(User.username == username).first()
     if not user:
         logger.warning("User not found: %s", username)
@@ -436,18 +477,14 @@ async def get_user(
     logger.info("User details retrieved for: %s", username)
     return UserResponse(username=user.username, roles=user.roles)
 
-@app.patch("/users/{username}", tags=["Users"], operation_id="update_user")
+# Update User Endpoint
+@app.patch("/users/{username}", tags=["Users"], operation_id="updateUser", summary="Update user information", description="Updates a user's password and/or roles.")
 async def update_user(
     username: str = Path(..., description="The username of the user to update."),
     update: UserUpdate = Body(...),
     current_user: Dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Update user information.
-
-    Updates the user's password and/or roles.
-    """
     user = db.query(User).filter(User.username == username).first()
     if not user:
         logger.warning("Attempt to update non-existent user: %s", username)
@@ -461,18 +498,13 @@ async def update_user(
     logger.info("User updated: %s", username)
     return {"detail": "User updated."}
 
-@app.delete("/users/{username}", status_code=status.HTTP_204_NO_CONTENT, tags=["Users"], operation_id="delete_user")
+# Delete User Endpoint (Admin Only)
+@app.delete("/users/{username}", status_code=status.HTTP_204_NO_CONTENT, tags=["Users"], operation_id="deleteUser", summary="Delete a user", description="Deletes a specified user. Requires admin privileges.")
 async def delete_user(
     username: str = Path(..., description="The username of the user to delete."),
     admin: Dict = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
-    """
-    Delete a user.
-
-    Requires admin privileges.
-    Deletes the specified user.
-    """
     user = db.query(User).filter(User.username == username).first()
     if not user:
         logger.warning("Attempt to delete non-existent user: %s", username)
@@ -480,12 +512,18 @@ async def delete_user(
     db.delete(user)
     db.commit()
     logger.info("User deleted: %s by admin: %s", username, admin.get("username"))
-    return  # Returns 204 No Content
+    return  # 204 No Content
+
+# Dynamic Service Discovery Endpoint
+@app.get("/service-discovery", tags=["Service Discovery"], operation_id="getServiceDiscovery", summary="Discover peer services", description="Queries the API Gateway's lookup endpoint to resolve the URL of a specified service.")
+def service_discovery(service_name: str = Query(..., description="Name of the service to discover")):
+    discovered_url = get_service_url(service_name)
+    return {"service": service_name, "discovered_url": discovered_url}
 
 # -----------------------------------------------------------------------------
 # Run the Application
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
-    # Run the application on localhost:8001 as specified in the OpenAPI servers section.
+    # Run the application on localhost:8001 as specified.
     uvicorn.run(app, host="0.0.0.0", port=8001)

@@ -1,8 +1,12 @@
 import json
 import pytest
 from fastapi.testclient import TestClient
-from main import app, Base, SessionLocal, Line
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 import httpx
+
+# Import objects from our application.
+from main import app, Base, SessionLocal, Line
 
 # Dummy response class to simulate httpx.Response
 class DummyResponse:
@@ -19,31 +23,57 @@ class DummyResponse:
 
 @pytest.fixture(scope="module")
 def client(monkeypatch):
-    # Override get_service_url to always return a dummy URL
+    # Override get_service_url to always return a dummy URL.
     monkeypatch.setattr("main.get_service_url", lambda service_name: "http://dummy")
-
+    
     # Override httpx.post so that any POST request to a URL ending with '/sequence'
-    # returns a dummy response with a fixed sequence number (42)
+    # returns a dummy response with a fixed sequence number (42).
     def dummy_post(url, json, timeout):
         if url.endswith("/sequence"):
             return DummyResponse({"sequenceNumber": 42})
         return DummyResponse({}, status_code=404)
     monkeypatch.setattr(httpx, "post", dummy_post)
-
+    
     with TestClient(app) as c:
         yield c
 
-# Fixture to reset the database for tests
+# Fixture to reset the database for tests.
 @pytest.fixture(scope="module", autouse=True)
 def setup_database():
     Base.metadata.drop_all(bind=SessionLocal().bind)
     Base.metadata.create_all(bind=SessionLocal().bind)
     yield
 
+def test_landing_page(client: TestClient):
+    response = client.get("/")
+    assert response.status_code == 200
+    # Expect HTML content.
+    assert "html" in response.headers["content-type"].lower()
+    html = response.text.lower()
+    assert "welcome to" in html
+    assert "api documentation" in html
+    assert "health status" in html
+
 def test_health_check(client: TestClient):
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json()["status"] == "healthy"
+    data = response.json()
+    assert data["status"] == "healthy"
+    assert "timestamp" in data
+
+def test_service_discovery(client: TestClient):
+    response = client.get("/service-discovery", params={"service_name": "dummy_service"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["service"] == "dummy_service"
+    assert data["discovered_url"] == "http://dummy"
+
+def test_receive_notification(client: TestClient):
+    payload = {"message": "Test notification"}
+    response = client.post("/notifications", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert "notification received" in data["message"].lower()
 
 def test_create_line(client: TestClient):
     payload = {
@@ -58,11 +88,11 @@ def test_create_line(client: TestClient):
     data = response.json()
     assert data["content"] == "This is a test line."
     assert data["scriptId"] == 1
-    # Verify that the dummy sequence number from the CSS integration is used.
+    # Verify that the dummy sequence number is used.
     assert data["sequenceNumber"] == 42
 
 def test_get_line_by_id(client: TestClient):
-    # Create a line first
+    # Create a line first.
     create_payload = {
         "scriptId": 1,
         "speechId": 1,
@@ -79,7 +109,7 @@ def test_get_line_by_id(client: TestClient):
     assert data["content"] == "Line to retrieve"
 
 def test_update_line(client: TestClient):
-    # Create a line to update
+    # Create a line to update.
     create_payload = {
         "scriptId": 1,
         "speechId": 1,

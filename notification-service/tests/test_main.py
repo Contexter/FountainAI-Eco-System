@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 from jose import jwt
 
 # Import objects from our application.
-from main import app, Base, get_db, SECRET_KEY, Notification
+from main import app, Base, get_db, SECRET_KEY, Notification, get_service_url
 
 # Use an in-memory SQLite database.
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
@@ -39,9 +39,42 @@ def generate_admin_token():
     token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
     return {"Authorization": f"Bearer {token}"}
 
+# Helper function: generate a non-admin token.
+def generate_user_token():
+    payload = {"sub": "regularuser", "roles": "user"}
+    token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    return {"Authorization": f"Bearer {token}"}
+
 # -------------------------------
 # Test Cases
 # -------------------------------
+
+def test_landing_page():
+    response = client.get("/")
+    # Expect HTML response.
+    assert response.status_code == 200
+    assert "html" in response.headers["content-type"].lower()
+    # Check for key phrases.
+    html = response.text.lower()
+    assert "welcome to" in html
+    assert "api documentation" in html
+    assert "health status" in html
+
+def test_health_check():
+    response = client.get("/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "healthy"
+    assert "timestamp" in data
+
+def test_service_discovery(monkeypatch):
+    # Override get_service_url to return a dummy URL.
+    monkeypatch.setattr("main.get_service_url", lambda service_name: "http://dummy_url")
+    response = client.get("/service-discovery", params={"service_name": "notification_service"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["service"] == "notification_service"
+    assert data["discovered_url"] == "http://dummy_url"
 
 def test_create_notification():
     headers = generate_admin_token()
@@ -83,11 +116,7 @@ def test_list_notifications_without_token():
     assert response.status_code in (401, 403)
 
 def test_create_notification_without_admin():
-    # Create a non-admin token.
-    from main import get_current_user  # This import is just for context.
-    payload = {"sub": "user1", "roles": "user"}
-    token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = generate_user_token()
     response = client.post(
         "/notifications",
         json={"message": "Should Fail"},

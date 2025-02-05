@@ -4,7 +4,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 # Import objects from your app
-from main import app, Base, get_db, User, hash_password
+from main import app, Base, get_db, User, hash_password, get_service_url
+
+import httpx
 
 # Use an in-memory SQLite database.
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
@@ -62,8 +64,18 @@ def refresh_access_token(refresh_token: str):
 # Test Cases
 # -------------------------------
 
-def test_health_check():
+def test_landing_page():
+    # Test the default landing page returns HTML.
     response = client.get("/")
+    assert response.status_code == 200
+    # Check that the HTML contains key phrases.
+    html = response.text.lower()
+    assert "welcome to" in html
+    assert "api documentation" in html
+    assert "health status" in html
+
+def test_health_check():
+    response = client.get("/health")
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "ok"
@@ -182,14 +194,14 @@ def test_get_update_and_delete_user():
 
     # For deletion, we need admin privileges.
     db = next(override_get_db())
-    admin = User(
+    admin2 = User(
         username="admin2",
         hashed_password=hash_password("admin2pass"),
         roles="admin,user"
     )
-    db.add(admin)
+    db.add(admin2)
     db.commit()
-    db.refresh(admin)
+    db.refresh(admin2)
     admin_login = login_user("admin2", "admin2pass")
     admin_tokens = admin_login.json()
     admin_access = admin_tokens["access_token"]
@@ -202,3 +214,20 @@ def test_get_update_and_delete_user():
     # Confirm deletion by trying to retrieve the user.
     get_after_del = client.get("/users/modifyuser", headers=headers)
     assert get_after_del.status_code == 404
+
+def test_service_discovery(monkeypatch):
+    # Override get_service_url to always return a dummy URL.
+    monkeypatch.setattr("main.get_service_url", lambda service_name: "http://dummy_service_url")
+    response = client.get("/service-discovery", params={"service_name": "notification_service"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["service"] == "notification_service"
+    assert data["discovered_url"] == "http://dummy_service_url"
+
+def test_receive_notification():
+    # Test the notification stub endpoint.
+    payload = {"message": "Test notification"}
+    response = client.post("/notifications", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert "notification received" in data["message"].lower()

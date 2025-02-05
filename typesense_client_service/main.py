@@ -2,25 +2,43 @@
 Typesense Client Microservice (Schema-Agnostic Edition)
 =======================================================
 
-This service acts as a relay for indexing and searching documents in Typesense
-without imposing a fixed schema. It provides endpoints to create/retrieve collections,
-upsert/delete documents, and perform searches. It overrides the default FastAPI
-OpenAPI spec to report version 3.1.0.
-
-Environment variables are loaded from .env.
+Purpose:
+    This service acts as a relay for indexing and searching documents in Typesense without imposing a fixed schema.
+    It provides endpoints to create/retrieve collections, upsert/delete documents, and perform searches.
+    The service loads its configuration from a .env file, integrates with an optional KMS for dynamic API key retrieval,
+    and exposes Prometheus metrics for observability. JWT-based authentication is not enforced here,
+    as it primarily relays requests to the Typesense server.
+    
+Key Integrations:
+    - FastAPI: Provides the web framework and automatic OpenAPI documentation.
+    - SQLAlchemy & SQLite: Used for persistence (if needed).
+    - Typesense: A client is initialized to communicate with the Typesense cluster.
+    - KMS Integration (Optional): Retrieves the Typesense API key dynamically if not set.
+    - Dynamic Service Discovery: Uses the API Gateway’s lookup endpoint to resolve service URLs.
+    - Prometheus: Metrics exposed via prometheus_fastapi_instrumentator.
+    - Default Landing Page & Health Check: Enhances usability.
+    
+OpenAPI Schema:
+    The OpenAPI schema is forced to version 3.1.0 for Swagger UI compatibility.
+    
+Usage:
+    The service is designed to be containerized and orchestrated along with other services in the FountainAI Eco‑System.
 """
 
 import os
 import logging
 from typing import List, Dict, Any, Optional
 
-from fastapi import FastAPI, HTTPException, Body, Path
+from fastapi import FastAPI, HTTPException, Body, Path, Query, status
+from fastapi.responses import HTMLResponse
 from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from prometheus_fastapi_instrumentator import Instrumentator
 import typesense
 import requests
+import httpx
+from jose import JWTError, jwt
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -92,9 +110,9 @@ class FieldDefinition(BaseModel):
     index: bool = True
 
 class CreateCollectionRequest(BaseModel):
-    name: str
-    fields: List[FieldDefinition]
-    default_sorting_field: Optional[str] = ""
+    name: str = Field(..., description="Name of the collection")
+    fields: List[FieldDefinition] = Field(..., description="List of field definitions")
+    default_sorting_field: Optional[str] = Field("", description="Default sorting field, if any")
 
 class CollectionResponse(BaseModel):
     name: str
@@ -102,13 +120,13 @@ class CollectionResponse(BaseModel):
     fields: List[Dict[str, Any]]
 
 class DocumentSyncPayload(BaseModel):
-    operation: str   # "create", "update", or "delete"
-    collection_name: str
-    document: Dict[str, Any]
+    operation: str = Field(..., description="Operation type: create, update, or delete")
+    collection_name: str = Field(..., description="Name of the collection")
+    document: Dict[str, Any] = Field(..., description="The document payload")
 
 class SearchRequest(BaseModel):
-    collection_name: str
-    parameters: Dict[str, Any]
+    collection_name: str = Field(..., description="Name of the collection")
+    parameters: Dict[str, Any] = Field(..., description="Search parameters")
 
 class SearchHit(BaseModel):
     document: Dict[str, Any]
@@ -127,7 +145,7 @@ app = FastAPI(
 )
 
 # -----------------------------------------------------------------------------
-# Custom OpenAPI Schema Generation (Enforce OpenAPI 3.1.0)
+# Custom OpenAPI Schema Generation (Force OpenAPI 3.0.3) for SwaggerUI compatibility
 # -----------------------------------------------------------------------------
 def custom_openapi():
     if app.openapi_schema:
@@ -140,7 +158,7 @@ def custom_openapi():
     )
     schema["openapi"] = "3.0.3"
     app.openapi_schema = schema
-    return app.openapi_schema
+    return schema
 
 app.openapi = custom_openapi
 
@@ -150,17 +168,58 @@ app.openapi = custom_openapi
 Instrumentator().instrument(app).expose(app)
 
 # -----------------------------------------------------------------------------
-# Endpoints
+# Default Landing Page Endpoint
 # -----------------------------------------------------------------------------
-@app.get("/health", tags=["Health"])
+@app.get("/", response_class=HTMLResponse, tags=["Landing"], operation_id="getLandingPage", summary="Display landing page", description="Returns a styled landing page with service name, version, and links to API docs and health check.")
+def landing_page():
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>{service_title}</title>
+      <style>
+        body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; height: 100vh; }}
+        .container {{ background: #fff; padding: 40px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); text-align: center; max-width: 600px; margin: auto; }}
+        h1 {{ font-size: 2.5rem; color: #333; }}
+        p {{ font-size: 1.1rem; color: #666; line-height: 1.6; }}
+        a {{ color: #007acc; text-decoration: none; font-weight: bold; }}
+        a:hover {{ text-decoration: underline; }}
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>Welcome to {service_title}</h1>
+        <p><strong>Version:</strong> {service_version}</p>
+        <p>{service_description}</p>
+        <p>
+          Visit the <a href="/docs">API Documentation</a> or check the 
+          <a href="/health">Health Status</a>.
+        </p>
+      </div>
+    </body>
+    </html>
+    """
+    filled_html = html_content.format(
+        service_title=app.title,
+        service_version=app.version,
+        service_description="This service indexes and searches documents in Typesense without imposing a fixed schema."
+    )
+    return HTMLResponse(content=filled_html, status_code=200)
+
+# -----------------------------------------------------------------------------
+# Health Check Endpoint
+# -----------------------------------------------------------------------------
+@app.get("/health", tags=["Health"], operation_id="getHealthStatus", summary="Retrieve service health status", description="Returns the current health status of the service as a JSON object (e.g., {'status': 'healthy'}).")
 def health_check():
     return {"status": "healthy"}
 
-@app.post("/collections", response_model=CollectionResponse, tags=["Collections"])
+# -----------------------------------------------------------------------------
+# Endpoint to Create (or Retrieve) a Collection
+# -----------------------------------------------------------------------------
+@app.post("/collections", response_model=CollectionResponse, tags=["Collections"], operation_id="createCollection", summary="Create or retrieve a collection", description="Creates a Typesense collection with the provided schema, or retrieves it if it already exists.")
 def create_collection(payload: CreateCollectionRequest = Body(...)):
-    """
-    Create (or retrieve) a Typesense collection with the given schema.
-    """
     try:
         schema = {
             "name": payload.name,
@@ -168,14 +227,12 @@ def create_collection(payload: CreateCollectionRequest = Body(...)):
         }
         if payload.default_sorting_field:
             schema["default_sorting_field"] = payload.default_sorting_field
-
         try:
             collection = typesense_client.collections.create(schema)
             logger.info("Created collection '%s'", payload.name)
         except typesense.exceptions.ObjectAlreadyExists:
             logger.warning("Collection '%s' already exists.", payload.name)
             collection = typesense_client.collections[payload.name].retrieve()
-
         return CollectionResponse(
             name=collection["name"],
             num_documents=collection.get("num_documents", 0),
@@ -185,11 +242,11 @@ def create_collection(payload: CreateCollectionRequest = Body(...)):
         logger.error("Error creating collection: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/collections/{name}", response_model=CollectionResponse, tags=["Collections"])
+# -----------------------------------------------------------------------------
+# Endpoint to Retrieve a Collection by Name
+# -----------------------------------------------------------------------------
+@app.get("/collections/{name}", response_model=CollectionResponse, tags=["Collections"], operation_id="getCollection", summary="Retrieve a collection", description="Retrieves a Typesense collection by name.")
 def get_collection(name: str = Path(..., description="The collection name")):
-    """
-    Retrieve an existing collection by name.
-    """
     try:
         collection = typesense_client.collections[name].retrieve()
         return CollectionResponse(
@@ -201,13 +258,11 @@ def get_collection(name: str = Path(..., description="The collection name")):
         logger.error("Error retrieving collection '%s': %s", name, e)
         raise HTTPException(status_code=404, detail=str(e))
 
-@app.post("/documents/sync", tags=["Documents"])
+# -----------------------------------------------------------------------------
+# Endpoint to Upsert or Delete a Document
+# -----------------------------------------------------------------------------
+@app.post("/documents/sync", tags=["Documents"], operation_id="syncDocument", summary="Upsert or delete a document", description="Upserts (creates/updates) or deletes a document in the specified collection.")
 def sync_document(payload: DocumentSyncPayload = Body(...)):
-    """
-    Upsert or delete a document in a specified collection.
-    For "create" or "update", document must include an "id" field.
-    For "delete", document must include an "id" field.
-    """
     try:
         operation = payload.operation.lower()
         if operation in ["create", "update"]:
@@ -227,11 +282,11 @@ def sync_document(payload: DocumentSyncPayload = Body(...)):
         logger.error("Error syncing document: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/search", response_model=SearchResponse, tags=["Search"])
+# -----------------------------------------------------------------------------
+# Endpoint to Perform a Search
+# -----------------------------------------------------------------------------
+@app.post("/search", response_model=SearchResponse, tags=["Search"], operation_id="searchDocuments", summary="Search documents", description="Performs a search in a specified collection using custom parameters.")
 def search_documents(req: SearchRequest = Body(...)):
-    """
-    Perform a search in a specified collection with user-defined parameters.
-    """
     try:
         results = typesense_client.collections[req.collection_name].documents.search(req.parameters)
         hits = [{"document": hit["document"]} for hit in results.get("hits", [])]
@@ -246,4 +301,3 @@ def search_documents(req: SearchRequest = Body(...)):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8001)
-
