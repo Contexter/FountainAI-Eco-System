@@ -10,10 +10,13 @@ It provides:
   - Request proxying/routing to backend services.
   - Centralized logging.
   - Prometheus metrics instrumentation.
-  - A health check endpoint.
+  - A default landing page and a health check endpoint.
 
-The OpenAPI spec is forced to version 3.1.0.
+The OpenAPI spec is forced to version 3.0.3 for Swagger UI compatibility.
 Rate limiting is assumed to be handled by Caddy.
+
+This version integrates extended semantic metadata (camelCase operationIds, clear summaries, and concise descriptions)
+and follows the FountainAI Eco‑System service standards.
 """
 
 import os
@@ -25,6 +28,7 @@ from typing import Dict, Optional
 from fastapi import FastAPI, HTTPException, Request, Response, Depends, status
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, APIKeyHeader
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from prometheus_fastapi_instrumentator import Instrumentator
 from dotenv import load_dotenv
@@ -71,7 +75,7 @@ class ServiceRegistry(Base):
     service_name = Column(String, unique=True, index=True, nullable=False)
     url = Column(String, nullable=False)
 
-# Create the table if it doesn't exist
+# Create the table if it doesn't exist.
 Base.metadata.create_all(bind=engine)
 
 def get_db():
@@ -125,31 +129,110 @@ app = FastAPI(
     description=(
         "Central entry point for all client requests in the FountainAI ecosystem. "
         "Provides authentication, dynamic service discovery (with persistent registry), "
-        "routing, and centralized metrics."
+        "routing to backend services, and centralized metrics."
     ),
     version="1.0.0"
 )
 
-# Instrument the application with Prometheus metrics
 Instrumentator().instrument(app).expose(app)
+
+# -----------------------------------------------------------------------------
+# Default Landing Page
+# -----------------------------------------------------------------------------
+@app.get(
+    "/",
+    response_class=HTMLResponse,
+    tags=["Landing"],
+    operation_id="getLandingPage",
+    summary="Display landing page",
+    description="Returns a friendly landing page with service name, version, and links to API docs and health check."
+)
+def landing_page():
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>{service_title}</title>
+      <style>
+        body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; height: 100vh; }}
+        .container {{ background: #fff; padding: 40px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; max-width: 600px; margin: auto; }}
+        h1 {{ font-size: 2.5rem; color: #333; }}
+        p {{ font-size: 1.1rem; color: #666; line-height: 1.6; }}
+        a {{ color: #007acc; text-decoration: none; font-weight: bold; }}
+        a:hover {{ text-decoration: underline; }}
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>Welcome to {service_title}</h1>
+        <p><strong>Version:</strong> {service_version}</p>
+        <p>This API Gateway serves as the central entry point for the FountainAI ecosystem, handling authentication, service registry, and dynamic service discovery.</p>
+        <p>
+          Visit the <a href="/docs">API Documentation</a> or check the <a href="/health">Health Status</a>.
+        </p>
+      </div>
+    </body>
+    </html>
+    """
+    filled_html = html_content.format(
+        service_title=str(app.title),
+        service_version=str(app.version)
+    )
+    return HTMLResponse(content=filled_html, status_code=200)
+
+# -----------------------------------------------------------------------------
+# Health Check Endpoint
+# -----------------------------------------------------------------------------
+@app.get(
+    "/health",
+    response_model=dict,
+    tags=["Health"],
+    operation_id="getHealthStatus",
+    summary="Retrieve service health status",
+    description="Returns the current health status of the service as a JSON object (e.g., {'status': 'healthy'})."
+)
+def health_check():
+    return {"status": "healthy"}
 
 # -----------------------------------------------------------------------------
 # CRUD Endpoints for Persistent Service Registry
 # -----------------------------------------------------------------------------
-@app.get("/registry", tags=["Service Registry"])
+@app.get(
+    "/registry",
+    tags=["Service Registry"],
+    operation_id="listRegistry",
+    summary="List registry entries",
+    description="Returns a mapping of service names to their URLs from the registry."
+)
 def list_registry(db: Session = Depends(get_db)):
     entries = db.query(ServiceRegistry).all()
     return {entry.service_name: entry.url for entry in entries}
 
-@app.get("/registry/{service_name}", response_model=RegistryEntry, tags=["Service Registry"])
+@app.get(
+    "/registry/{service_name}",
+    response_model=RegistryEntry,
+    tags=["Service Registry"],
+    operation_id="getRegistryEntry",
+    summary="Get a registry entry",
+    description="Returns the registry entry for the specified service."
+)
 def get_registry_entry(service_name: str, db: Session = Depends(get_db)):
     entry = db.query(ServiceRegistry).filter(ServiceRegistry.service_name == service_name).first()
     if not entry:
         raise HTTPException(status_code=404, detail=f"Service '{service_name}' not found")
     return RegistryEntry(service_name=entry.service_name, url=entry.url)
 
-@app.post("/registry", response_model=RegistryEntry, tags=["Service Registry"], dependencies=[Depends(admin_required)])
-def create_registry_entry(entry: RegistryEntry, db: Session = Depends(get_db)):
+@app.post(
+    "/registry",
+    response_model=RegistryEntry,
+    tags=["Service Registry"],
+    operation_id="createRegistryEntry",
+    summary="Create a registry entry",
+    description="Creates a new registry entry for a service. Admin privileges are required."
+)
+def create_registry_entry(entry: RegistryEntry, db: Session = Depends(get_db), current_user: dict = Depends(admin_required)):
     if db.query(ServiceRegistry).filter(ServiceRegistry.service_name == entry.service_name).first():
         raise HTTPException(status_code=400, detail=f"Service '{entry.service_name}' already exists")
     new_entry = ServiceRegistry(service_name=entry.service_name, url=entry.url)
@@ -159,8 +242,15 @@ def create_registry_entry(entry: RegistryEntry, db: Session = Depends(get_db)):
     logger.info(f"Created registry entry: {new_entry.service_name} -> {new_entry.url}")
     return RegistryEntry(service_name=new_entry.service_name, url=new_entry.url)
 
-@app.put("/registry/{service_name}", response_model=RegistryEntry, tags=["Service Registry"], dependencies=[Depends(admin_required)])
-def update_registry_entry(service_name: str, update: RegistryUpdate, db: Session = Depends(get_db)):
+@app.put(
+    "/registry/{service_name}",
+    response_model=RegistryEntry,
+    tags=["Service Registry"],
+    operation_id="updateRegistryEntry",
+    summary="Update a registry entry",
+    description="Updates the URL of an existing registry entry. Admin privileges are required."
+)
+def update_registry_entry(service_name: str, update: RegistryUpdate, db: Session = Depends(get_db), current_user: dict = Depends(admin_required)):
     entry = db.query(ServiceRegistry).filter(ServiceRegistry.service_name == service_name).first()
     if not entry:
         raise HTTPException(status_code=404, detail=f"Service '{service_name}' not found")
@@ -170,8 +260,14 @@ def update_registry_entry(service_name: str, update: RegistryUpdate, db: Session
     logger.info(f"Updated registry entry: {service_name} -> {entry.url}")
     return RegistryEntry(service_name=entry.service_name, url=entry.url)
 
-@app.delete("/registry/{service_name}", tags=["Service Registry"], dependencies=[Depends(admin_required)])
-def delete_registry_entry(service_name: str, db: Session = Depends(get_db)):
+@app.delete(
+    "/registry/{service_name}",
+    tags=["Service Registry"],
+    operation_id="deleteRegistryEntry",
+    summary="Delete a registry entry",
+    description="Deletes the specified registry entry. Admin privileges are required."
+)
+def delete_registry_entry(service_name: str, db: Session = Depends(get_db), current_user: dict = Depends(admin_required)):
     entry = db.query(ServiceRegistry).filter(ServiceRegistry.service_name == service_name).first()
     if not entry:
         raise HTTPException(status_code=404, detail=f"Service '{service_name}' not found")
@@ -181,9 +277,16 @@ def delete_registry_entry(service_name: str, db: Session = Depends(get_db)):
     return {"detail": f"Service '{service_name}' deleted from registry"}
 
 # -----------------------------------------------------------------------------
-# Lookup Endpoint for Service Discovery (Reads from DB)
+# Lookup Endpoint for Service Discovery
 # -----------------------------------------------------------------------------
-@app.get("/lookup/{service_name}", response_model=LookupResponse, tags=["Service Discovery"])
+@app.get(
+    "/lookup/{service_name}",
+    response_model=LookupResponse,
+    tags=["Service Discovery"],
+    operation_id="lookupService",
+    summary="Lookup a service URL",
+    description="Returns the URL for a given service name from the registry."
+)
 def lookup_service(service_name: str, db: Session = Depends(get_db)):
     entry = db.query(ServiceRegistry).filter(ServiceRegistry.service_name == service_name).first()
     if not entry:
@@ -193,20 +296,22 @@ def lookup_service(service_name: str, db: Session = Depends(get_db)):
     return LookupResponse(url=entry.url)
 
 # -----------------------------------------------------------------------------
-# Proxy Endpoint (Example of Routing)
+# Proxy Endpoint for Routing Requests
 # -----------------------------------------------------------------------------
-@app.api_route("/proxy/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"], tags=["Proxy"])
+@app.api_route(
+    "/proxy/{full_path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+    tags=["Proxy"],
+    operation_id="proxyRequest",
+    summary="Proxy requests to backend services",
+    description="Proxies requests to backend services based on the first path segment of the URL."
+)
 async def proxy(full_path: str, request: Request, current_user: dict = Depends(get_current_user)):
-    """
-    Proxies requests to backend services based on the first path segment.
-    For example: /proxy/character/details is routed to the Character Service.
-    """
     path_parts = full_path.split("/")
     if len(path_parts) < 2:
         raise HTTPException(status_code=400, detail="Path must include service and subpath")
     service_name = path_parts[0]
     sub_path = "/".join(path_parts[1:])
-    # Lookup service URL from DB
     async with httpx.AsyncClient() as client:
         lookup_response = await client.get(f"http://localhost:{GATEWAY_PORT}/lookup/{service_name}")
     if lookup_response.status_code != 200:
@@ -229,14 +334,7 @@ async def proxy(full_path: str, request: Request, current_user: dict = Depends(g
     return Response(content=response.content, status_code=response.status_code, headers=dict(response.headers))
 
 # -----------------------------------------------------------------------------
-# Health Check Endpoint
-# -----------------------------------------------------------------------------
-@app.get("/health", tags=["Health"])
-def health_check():
-    return {"status": "healthy"}
-
-# -----------------------------------------------------------------------------
-# OpenAPI Customization
+# OpenAPI Customization (Force OpenAPI 3.0.3)
 # -----------------------------------------------------------------------------
 def custom_openapi():
     if app.openapi_schema:
@@ -247,7 +345,7 @@ def custom_openapi():
         description=app.description,
         routes=app.routes,
     )
-    # Force OpenAPI version 3.1.0 - but must be assigned 3.0.3 to make swgaggerUI work
+    # Force OpenAPI version to 3.0.3 for Swagger UI compatibility.
     schema["openapi"] = "3.0.3"
     app.openapi_schema = schema
     return schema
@@ -260,4 +358,3 @@ app.openapi = custom_openapi
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=GATEWAY_PORT)
-
