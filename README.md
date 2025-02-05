@@ -1,7 +1,3 @@
-Below is the updated, comprehensive README for the FountainAI Eco‑System repository. The updates include additional requirements for dynamic service discovery and for both sending and receiving notifications via the Notification Service. The document retains all existing sections with the new requirements integrated into the "Inter‑Service Integration" section, as well as the standard project layout and default landing/health endpoints.
-
----
-
 # FountainAI Eco‑System
 
 The FountainAI Eco‑System is a collection of containerized, FastAPI‑based microservices that together power the FountainAI platform. Each service is designed to perform a specific function within the ecosystem while adhering to a common set of guidelines that ensure clarity, interoperability, and maintainability. This README outlines the standards and best practices for developing and integrating new services into the ecosystem.
@@ -32,11 +28,11 @@ Every FountainAI service must satisfy the following criteria:
 
 ### Inter‑Service Integration
 - **Dynamic Service Discovery:**  
-  Every service must implement dynamic service discovery by leveraging the API Gateway’s lookup endpoint. This allows services to dynamically resolve peer service URLs at runtime.
+  Every service must implement dynamic service discovery by leveraging the API Gateway’s lookup endpoint. This enables services to dynamically resolve peer service URLs at runtime.
 - **Notification Service Integration:**  
-  Each service must include a standardized interface for sending **and receiving notifications** via the central Notification Service—even if not used immediately—to facilitate future enhancements.  
-  - **Sending Notifications:** Services should provide a helper function or client to push notifications (e.g., alerts, status changes) to the Notification Service.  
-  - **Receiving Notifications:** Services should implement (or stub) an endpoint or interface that can receive notifications, enabling future two-way communication.
+  Each service must include a standardized interface for both sending **and receiving notifications** via the central Notification Service—even if the receive functionality is implemented as a stub for future enhancements.
+  - **Sending Notifications:** Services should provide a helper function or client to push notifications (e.g., alerts, status changes) to the Notification Service.
+  - **Receiving Notifications:** Services should implement (or stub) an endpoint or interface capable of receiving notifications, preparing them for future two-way communication.
 
 ### Observability
 - **Prometheus Metrics:**  
@@ -50,7 +46,7 @@ Every FountainAI service must satisfy the following criteria:
 - **Semantic Operation IDs:**  
   Endpoints must have descriptive, camelCase operationIds (e.g., `createCharacter`, `listScripts`, `updateAction`).
 - **Summaries & Descriptions:**  
-  Each endpoint must include a summary and a description that are concise (description ≤300 characters) yet clear about the endpoint’s behavior.
+  Each endpoint must include a brief summary and a description that is concise (description ≤300 characters) yet clear about the endpoint’s behavior.
 
 ---
 
@@ -84,7 +80,14 @@ service-name/
   A shell script that acts as the container’s entrypoint. It typically decides whether to start the service (using Uvicorn) or run tests (using pytest).
 
 - **main.py:**  
-  Contains the entire FastAPI application. It includes extended header comments describing the service, configuration setup, database initialization, authentication, Pydantic models, helper functions (e.g., for service discovery and notifications), endpoint definitions (with semantic metadata), custom OpenAPI generation, and the application’s entry point.
+  Contains the entire FastAPI application. This file must include:
+  - Extended header comments describing the service’s purpose and key integrations.
+  - Configuration setup, database initialization, authentication, and Pydantic model definitions.
+  - Helper functions for dynamic service discovery and notification integration.
+  - Endpoint definitions with semantic metadata (camelCase operationIds, clear summaries, and concise descriptions).
+  - A default landing page and a health endpoint.
+  - Custom OpenAPI generation to force version 3.0.3.
+  - The application’s entry point to run the service using Uvicorn.
 
 - **tests/test_main.py:**  
   Contains a comprehensive test suite that validates the service’s functionality. Tests should simulate external dependencies (using monkeypatching) to ensure isolated testing.
@@ -115,12 +118,12 @@ def landing_page():
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>{service_title}</title>
       <style>
-        body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; height: 100vh; }
-        .container { background: #fff; padding: 40px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); text-align: center; max-width: 600px; margin: auto; }
-        h1 { font-size: 2.5rem; color: #333; }
-        p { font-size: 1.1rem; color: #666; line-height: 1.6; }
-        a { color: #007acc; text-decoration: none; font-weight: bold; }
-        a:hover { text-decoration: underline; }
+        body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; height: 100vh; }}
+        .container {{ background: #fff; padding: 40px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); text-align: center; max-width: 600px; margin: auto; }}
+        h1 {{ font-size: 2.5rem; color: #333; }}
+        p {{ font-size: 1.1rem; color: #666; line-height: 1.6; }}
+        a {{ color: #007acc; text-decoration: none; font-weight: bold; }}
+        a:hover {{ text-decoration: underline; }}
       </style>
     </head>
     <body>
@@ -293,4 +296,4 @@ This comprehensive specification serves as the blueprint for creating new servic
 
 ---
 
-This README is intended for internal documentation and as a prompt for new service creation sessions, ensuring every new service adheres to these high standards.
+This README is intended for internal documentation and as a prompt for new service creation sessions, ensuring that every new service adheres to these high standards.
