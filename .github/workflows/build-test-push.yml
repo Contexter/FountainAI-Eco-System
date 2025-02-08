@@ -1,0 +1,68 @@
+name: Build, Test, and Push Docker Images
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-test-push:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # List the service directories whose images need to be built.
+        service:
+          - 2fa_service
+          - action_service
+          - central_gateway
+          - central_sequence_service
+          - character_service
+          - core_script_management_service
+          - fountainai-rbac
+          - kms-app
+          - notification-service
+          - paraphrase_service
+          - performer_service
+          - session_context_service
+          - spokenword_service
+          - story_factory_service
+          - typesense_client_service
+
+    steps:
+      # 1. Checkout the repository code.
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # 2. Log in to GitHub Container Registry (GHCR).
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 3. Run the test suite for the current service.
+      #    This command is consistent with the existing test suites (e.g., in 2fa_service/tests/test_main.py).
+      - name: Run test suite for ${{ matrix.service }}
+        working-directory: ${{ matrix.service }}
+        run: |
+          pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pytest tests --maxfail=1 --disable-warnings -q
+
+      # 4. Build the Docker image for the current service.
+      - name: Build Docker image for ${{ matrix.service }}
+        working-directory: ${{ matrix.service }}
+        run: |
+          docker build -t ${{ matrix.service }}:latest .
+
+      # 5. Tag the Docker image for GHCR.
+      - name: Tag Docker image for ${{ matrix.service }}
+        run: |
+          docker tag ${{ matrix.service }}:latest ghcr.io/${{ github.repository_owner }}/${{ matrix.service }}:latest
+
+      # 6. Push the tagged Docker image to GHCR.
+      - name: Push Docker image for ${{ matrix.service }}
+        run: |
+          docker push ghcr.io/${{ github.repository_owner }}/${{ matrix.service }}:latest
+
