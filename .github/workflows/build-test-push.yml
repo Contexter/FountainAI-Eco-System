@@ -28,7 +28,7 @@ jobs:
           - typesense_client_service
 
     steps:
-      # 1. Checkout the repository.
+      # 1. Checkout the repository code.
       - name: Checkout code
         uses: actions/checkout@v3
 
@@ -40,29 +40,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 3. Run the test suite for the current service using the entrypoint.sh script.
+      # 3. Run the test suite for the current service via entrypoint.sh.
+      #    Create a local symlink 'python' pointing to python3 and prepend the working directory to PATH.
       - name: Run test suite for ${{ matrix.service }}
         working-directory: ${{ matrix.service }}
         run: |
           # Ensure the current directory (which contains main.py) is in PYTHONPATH.
           export PYTHONPATH=$(pwd)
-          # Make sure entrypoint.sh is executable.
+          # Ensure entrypoint.sh is executable.
           chmod +x entrypoint.sh
-          # Run the tests using entrypoint.sh by passing "pytest" as the first argument.
+          # Create a local 'python' symlink that points to python3.
+          ln -sf $(which python3) python
+          # Prepend the current directory to PATH so that ./python is found first.
+          export PATH=$(pwd):$PATH
+          # Run the tests using entrypoint.sh with the "pytest" argument.
           ./entrypoint.sh pytest --maxfail=1 --disable-warnings -q
 
       # 4. Build the Docker image for the current service.
       - name: Build Docker image for ${{ matrix.service }}
         working-directory: ${{ matrix.service }}
-        run: |
-          docker build -t ${{ matrix.service }}:latest .
+        run: docker build -t ${{ matrix.service }}:latest .
 
       # 5. Tag the Docker image for GHCR.
       - name: Tag Docker image for ${{ matrix.service }}
-        run: |
-          docker tag ${{ matrix.service }}:latest ghcr.io/${{ github.repository_owner }}/${{ matrix.service }}:latest
+        run: docker tag ${{ matrix.service }}:latest ghcr.io/${{ github.repository_owner }}/${{ matrix.service }}:latest
 
       # 6. Push the tagged Docker image to GHCR.
       - name: Push Docker image for ${{ matrix.service }}
-        run: |
-          docker push ghcr.io/${{ github.repository_owner }}/${{ matrix.service }}:latest
+        run: docker push ghcr.io/${{ github.repository_owner }}/${{ matrix.service }}:latest
