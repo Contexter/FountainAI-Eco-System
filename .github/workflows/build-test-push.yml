@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 10
     strategy:
       matrix:
-        service: ${{ github.event.inputs.image_name != '' && fromJSON('["' + github.event.inputs.image_name + '"]') || fromJSON('["2fa_service", "action_service", "central_gateway", "central_sequence_service", "character_service", "core_script_management_service", "fountainai-rbac", "kms-app", "notification-service", "paraphrase_service", "performer_service", "session_context_service", "spokenword_service", "story_factory_service", "typesense_client_service"]') }}
+        service: ${{ fromJSON(github.event.inputs.image_name != '' && '["' + github.event.inputs.image_name + '"]' || '["2fa_service", "action_service", "central_gateway", "central_sequence_service", "character_service", "core_script_management_service", "fountainai-rbac", "kms-app", "notification-service", "paraphrase_service", "performer_service", "session_context_service", "spokenword_service", "story_factory_service", "typesense_client_service"]') }}
       max-parallel: 5
 
     steps:
