@@ -28,7 +28,7 @@ jobs:
           - typesense_client_service
 
     steps:
-      # 1. Checkout the repository code.
+      # 1. Checkout the repository.
       - name: Checkout code
         uses: actions/checkout@v3
 
@@ -41,7 +41,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # 3. Run the test suite for the current service via entrypoint.sh.
-      #    Create a local symlink 'python' pointing to python3 and prepend the working directory to PATH.
       - name: Run test suite for ${{ matrix.service }}
         working-directory: ${{ matrix.service }}
         run: |
@@ -49,10 +48,12 @@ jobs:
           export PYTHONPATH=$(pwd)
           # Ensure entrypoint.sh is executable.
           chmod +x entrypoint.sh
-          # Create a local 'python' symlink that points to python3.
-          ln -sf $(which python3) python
-          # Prepend the current directory to PATH so that ./python is found first.
-          export PATH=$(pwd):$PATH
+          # Create a temporary directory for our 'python' symlink.
+          mkdir -p /tmp/python-bin
+          # Create a symlink named 'python' in /tmp/python-bin that points to python3.
+          ln -sf $(which python3) /tmp/python-bin/python
+          # Prepend /tmp/python-bin to PATH so that 'python' resolves correctly.
+          export PATH=/tmp/python-bin:$PATH
           # Run the tests using entrypoint.sh with the "pytest" argument.
           ./entrypoint.sh pytest --maxfail=1 --disable-warnings -q
 
