@@ -297,7 +297,7 @@ A FountainAI service **MUST**:
 6. **Expose a Health Endpoint** (`GET /health`) returning `{"status": "healthy"}`.
 7. **Support Dynamic Service Discovery** (via the API Gateway).
 8. **Integrate with the Notification Service** for real-time event-driven updates (both sending and receiving).
-9. **Expose an OpenAPI Spec** with semantic operation IDs, short descriptions, and version `3.0.3`.
+9. **Expose an OpenAPI Spec** with semantic operation IDs, summaries and descriptions, and version `3.0.3`.
 10. **Run behind Caddy** for reverse proxying, TLS, and domain routing (subdomain per service).
 
 By following these guidelines, FountainAI services remain **secure, scalable, user-friendly**, and **adaptable**, benefiting from real-time configuration updates and consistent, discoverable endpoints across the entire ecosystem.
