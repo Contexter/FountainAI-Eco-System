@@ -1,0 +1,383 @@
+openapi: 3.0.3
+info:
+  title: Central Sequence Service
+  description: >-
+    This API manages the assignment and updating of sequence numbers for various
+    elements within a story, ensuring logical order and consistency. Data is
+    persisted in an SQLite database and synchronized with the central FountainAI
+    Typesense Service. Collection creation is mandatory and verified at startup.
+  version: 1.0.0
+paths:
+  /metrics:
+    get:
+      summary: Metrics
+      description: Endpoint that serves Prometheus metrics.
+      operationId: metrics_metrics_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /:
+    get:
+      tags:
+        - Landing
+      summary: Display landing page
+      description: >-
+        Returns a styled landing page with service name, version, and links to
+        API docs and health check.
+      operationId: getLandingPage
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            text/html:
+              schema:
+                type: string
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Retrieve service health status
+      description: >-
+        Returns the current health status of the service as a JSON object (e.g.,
+        {'status': 'healthy'}).
+      operationId: getHealthStatus
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /sequence:
+    post:
+      tags:
+        - Sequence Management
+      summary: Generate a new sequence number
+      description: >-
+        Generates and returns the next available sequence number for a given
+        element type and element ID.
+      operationId: generateSequenceNumber
+      parameters:
+        - required: true
+          schema:
+            title: Authorization
+            type: string
+          name: authorization
+          in: header
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SequenceRequest'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SequenceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /sequence/reorder:
+    post:
+      tags:
+        - Sequence Management
+      summary: Reorder elements
+      description: >-
+        Updates the sequence numbers of elements based on the new order
+        provided.
+      operationId: reorderElements
+      parameters:
+        - required: true
+          schema:
+            title: Authorization
+            type: string
+          name: authorization
+          in: header
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReorderRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReorderResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /sequence/version:
+    post:
+      tags:
+        - Version Management
+      summary: Create new version
+      description: >-
+        Creates a new version for an element by incrementing the version number
+        while maintaining sequence consistency.
+      operationId: createNewVersion
+      parameters:
+        - required: true
+          schema:
+            title: Authorization
+            type: string
+          name: authorization
+          in: header
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VersionRequest'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /notifications:
+    post:
+      tags:
+        - Notification
+      summary: Receive notifications
+      description: >-
+        Endpoint stub for receiving notifications from the central Notification
+        Service.
+      operationId: receiveNotification
+      parameters:
+        - required: true
+          schema:
+            title: Authorization
+            type: string
+          name: authorization
+          in: header
+      requestBody:
+        content:
+          application/json:
+            schema:
+              title: Payload
+              type: object
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /service-discovery:
+    get:
+      tags:
+        - Service Discovery
+      summary: Discover peer services
+      description: >-
+        Queries the API Gateway's lookup endpoint to resolve the URL of a
+        specified service.
+      operationId: getServiceDiscovery
+      parameters:
+        - description: Name of the service to discover
+          required: true
+          schema:
+            title: Service Name
+            type: string
+            description: Name of the service to discover
+          name: service_name
+          in: query
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+components:
+  schemas:
+    ElementTypeEnum:
+      title: ElementTypeEnum
+      enum:
+        - script
+        - section
+        - character
+        - action
+        - spokenWord
+      type: string
+      description: An enumeration.
+    HTTPValidationError:
+      title: HTTPValidationError
+      type: object
+      properties:
+        detail:
+          title: Detail
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationError'
+    ReorderRequest:
+      title: ReorderRequest
+      required:
+        - elementIds
+        - newOrder
+      type: object
+      properties:
+        elementIds:
+          title: Elementids
+          type: array
+          items:
+            type: integer
+          description: List of element IDs to reorder
+        newOrder:
+          title: Neworder
+          type: array
+          items:
+            type: integer
+          description: New sequence order (list of element IDs in desired order)
+    ReorderResponse:
+      title: ReorderResponse
+      required:
+        - reorderedElements
+        - comment
+      type: object
+      properties:
+        reorderedElements:
+          title: Reorderedelements
+          type: array
+          items:
+            $ref: '#/components/schemas/ReorderResponseElement'
+        comment:
+          title: Comment
+          type: string
+    ReorderResponseElement:
+      title: ReorderResponseElement
+      required:
+        - elementId
+        - oldSequenceNumber
+        - newSequenceNumber
+      type: object
+      properties:
+        elementId:
+          title: Elementid
+          type: integer
+        oldSequenceNumber:
+          title: Oldsequencenumber
+          type: integer
+        newSequenceNumber:
+          title: Newsequencenumber
+          type: integer
+    SequenceRequest:
+      title: SequenceRequest
+      required:
+        - elementType
+        - elementId
+        - comment
+      type: object
+      properties:
+        elementType:
+          allOf:
+            - $ref: '#/components/schemas/ElementTypeEnum'
+          description: Type of the element
+        elementId:
+          title: Elementid
+          minimum: 1
+          type: integer
+          description: Unique identifier of the element
+        comment:
+          title: Comment
+          type: string
+          description: Context for generating a sequence number
+    SequenceResponse:
+      title: SequenceResponse
+      required:
+        - sequenceNumber
+        - comment
+      type: object
+      properties:
+        sequenceNumber:
+          title: Sequencenumber
+          minimum: 1
+          type: integer
+          description: The generated sequence number
+        comment:
+          title: Comment
+          type: string
+          description: Explanation for the generated sequence
+    ValidationError:
+      title: ValidationError
+      required:
+        - loc
+        - msg
+        - type
+      type: object
+      properties:
+        loc:
+          title: Location
+          type: array
+          items:
+            anyOf:
+              - type: string
+              - type: integer
+        msg:
+          title: Message
+          type: string
+        type:
+          title: Error Type
+          type: string
+    VersionRequest:
+      title: VersionRequest
+      required:
+        - elementType
+        - elementId
+      type: object
+      properties:
+        elementType:
+          $ref: '#/components/schemas/ElementTypeEnum'
+        elementId:
+          title: Elementid
+          type: integer
+        comment:
+          title: Comment
+          type: string
+          default: ''
+    VersionResponse:
+      title: VersionResponse
+      required:
+        - versionNumber
+        - comment
+      type: object
+      properties:
+        versionNumber:
+          title: Versionnumber
+          minimum: 1
+          type: integer
+          description: The new version number
+        comment:
+          title: Comment
+          type: string
